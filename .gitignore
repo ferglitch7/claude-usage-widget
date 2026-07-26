@@ -1,0 +1,11 @@
+cookies.local.json
+cookies.local.json.bak
+__pycache__/
+*.pyc
+build/
+dist/
+installer/
+.claude/
+share/
+login_test.log
+error.log
