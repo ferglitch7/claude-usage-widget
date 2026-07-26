@@ -3,7 +3,7 @@
 ; en el Menu Inicio y arranque automatico opcional.
 
 #define MyAppName "Claude Usage Widget"
-#define MyAppVersion "1.0"
+#define MyAppVersion "1.0.0"
 #define MyAppExeName "ClaudeUsageWidget.exe"
 
 [Setup]
