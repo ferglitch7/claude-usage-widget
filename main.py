@@ -20,6 +20,7 @@ import api_client
 import auth
 import ui
 import update_checker
+from version import VERSION
 
 POLL_INTERVAL_SECONDS = 15
 UPDATE_CHECK_INTERVAL_SECONDS = 6 * 60 * 60
@@ -269,6 +270,8 @@ def main() -> None:
         pystray.MenuItem("Iniciar sesion", on_login),
         pystray.MenuItem("Actualizar ahora", on_refresh_now),
         pystray.MenuItem("Salir", on_quit),
+        pystray.Menu.SEPARATOR,
+        pystray.MenuItem(f"v{VERSION}", lambda icon, item: None, enabled=False),
     )
     tray_icon = pystray.Icon("claude-usage-widget", build_tray_image(), "Claude Usage", menu)
 

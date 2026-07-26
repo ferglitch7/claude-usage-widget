@@ -43,6 +43,8 @@ class LimitBlock:
     percent: float
     resets_at: Optional[datetime]
     is_active: bool
+    value_text: Optional[str] = None
+    """Texto a mostrar en vez de "{percent}%" (ej. creditos: "USD 23.73 de USD 40.00")."""
 
 
 def _get_org_id(cookiejar: http.cookiejar.CookieJar) -> Optional[str]:
@@ -122,4 +124,23 @@ def fetch_usage(cookiejar: http.cookiejar.CookieJar) -> list[LimitBlock]:
                 is_active=bool(entry.get("is_active")),
             )
         )
+
+    spend = data.get("spend") or {}
+    if spend.get("enabled"):
+        used = spend.get("used") or {}
+        limit = spend.get("limit") or {}
+        used_amount = used.get("amount_minor", 0) / (10 ** used.get("exponent", 2))
+        limit_amount = limit.get("amount_minor", 0) / (10 ** limit.get("exponent", 2))
+        currency = used.get("currency", "USD")
+        blocks.append(
+            LimitBlock(
+                kind="credits",
+                label="Usage credits",
+                percent=float(spend.get("percent") or 0),
+                resets_at=None,
+                is_active=True,
+                value_text=f"{currency} {used_amount:.2f} de {currency} {limit_amount:.2f}",
+            )
+        )
+
     return blocks

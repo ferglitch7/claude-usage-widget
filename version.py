@@ -4,4 +4,4 @@ como `vX.Y.Z` y debe coincidir con lo que se sube aca cuando se hace un
 build nuevo.
 """
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"

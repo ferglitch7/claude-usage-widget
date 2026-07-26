@@ -349,8 +349,9 @@ class Popup:
         label_widget.pack(side="left")
 
         is_warning = block.percent >= WARNING_THRESHOLD
+        percent_text = block.value_text if block.value_text is not None else f"{block.percent:.0f}%"
         percent_widget = tk.Label(
-            header, text=f"{block.percent:.0f}%",
+            header, text=percent_text,
             bg=BG_COLOR, fg=(ERROR_COLOR if is_warning else SUBTEXT_COLOR),
             font=(FONT_FAMILY, self._fp(11)), anchor="e",
         )
