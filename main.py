@@ -12,18 +12,22 @@ import traceback
 import tkinter as tk
 import webbrowser
 from dataclasses import dataclass, field
+from typing import Optional
 
 import pystray
 from PIL import Image, ImageDraw
 
 import api_client
 import auth
+import claude_app_watcher
 import ui
 import update_checker
 from version import VERSION
 
-POLL_INTERVAL_SECONDS = 15
+POLL_INTERVAL_ACTIVE_SECONDS = 15
+POLL_INTERVAL_IDLE_SECONDS = 5 * 60
 UPDATE_CHECK_INTERVAL_SECONDS = 6 * 60 * 60
+CLAUDE_APP_WATCH_INTERVAL_SECONDS = 1.0
 TRAY_ICON_SIZE = 64
 CLAUDE_ORANGE = (217, 119, 87, 255)  # #D97757
 LOG_PATH = auth.APP_DIR / "error.log"
@@ -119,10 +123,52 @@ def refresh_once(state: AppState, on_update) -> None:
     on_update()
 
 
-def poll_loop(state: AppState, on_update, stop_event: threading.Event) -> None:
+def poll_loop(popup: ui.Popup, state: AppState, on_update, stop_event: threading.Event) -> None:
+    """Refresca cada POLL_INTERVAL_ACTIVE_SECONDS mientras el popup esta
+    abierto, pero baja a POLL_INTERVAL_IDLE_SECONDS mientras esta cerrado
+    (que es la mayor parte del tiempo que el widget vive en la bandeja) --
+    antes pegaba siempre cada 15s sin importar si alguien estaba mirando.
+    Al reabrir el popup, `on_left_click` ya fuerza un refresh inmediato, asi
+    que la respuesta al usuario sigue siendo instantanea.
+    """
     while not stop_event.is_set():
         refresh_once(state, on_update)
-        stop_event.wait(POLL_INTERVAL_SECONDS)
+        interval = POLL_INTERVAL_ACTIVE_SECONDS if popup.visible else POLL_INTERVAL_IDLE_SECONDS
+        stop_event.wait(interval)
+
+
+def claude_app_watch_loop(
+    root: tk.Tk, popup: ui.Popup, state: AppState, stop_event: threading.Event
+) -> None:
+    """Esconde/muestra el popup en sync con que la app de escritorio de
+    Claude (Claude.exe) este minimizada o no -- nunca reacciona a que otras
+    ventanas (Telegram, el navegador, etc) tomen el foco, solo a esa
+    aplicacion especifica. Solo actua mientras el toggle del popup este
+    encendido; si esta apagado, no hace nada.
+    """
+    was_minimized: Optional[bool] = None
+    hwnd: Optional[int] = None
+    while not stop_event.is_set():
+        if popup.sync_with_claude_app:
+            # Cachea el hwnd -- re-enumerar TODAS las ventanas de Windows
+            # cada segundo (EnumWindows) es innecesario si Claude sigue
+            # siendo la misma ventana; solo se re-busca si se cerro.
+            if hwnd is None or not ctypes.windll.user32.IsWindow(hwnd):
+                hwnd = claude_app_watcher.find_claude_app_hwnd()
+                was_minimized = None
+
+            if hwnd is not None:
+                minimized = claude_app_watcher.is_minimized(hwnd)
+                if was_minimized is not None and minimized != was_minimized:
+                    if minimized:
+                        root.after(0, popup.hide)
+                    else:
+                        root.after(0, popup.show, state, ui.get_cursor_pos())
+                was_minimized = minimized
+        else:
+            hwnd = None
+            was_minimized = None
+        stop_event.wait(CLAUDE_APP_WATCH_INTERVAL_SECONDS)
 
 
 def update_check_loop(tray_icon: pystray.Icon, update_state: dict, stop_event: threading.Event) -> None:
@@ -276,9 +322,14 @@ def main() -> None:
     tray_icon = pystray.Icon("claude-usage-widget", build_tray_image(), "Claude Usage", menu)
 
     poll_thread = threading.Thread(
-        target=poll_loop, args=(state, on_update, stop_event), daemon=True
+        target=poll_loop, args=(popup, state, on_update, stop_event), daemon=True
     )
     poll_thread.start()
+
+    claude_app_watch_thread = threading.Thread(
+        target=claude_app_watch_loop, args=(root, popup, state, stop_event), daemon=True
+    )
+    claude_app_watch_thread.start()
 
     update_thread = threading.Thread(
         target=update_check_loop, args=(tray_icon, update_state, stop_event), daemon=True

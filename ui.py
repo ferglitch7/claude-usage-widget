@@ -121,6 +121,108 @@ def _format_resets(kind: str, resets_at: Optional[datetime]) -> str:
     return f"Resets {local.strftime('%a')} {local.strftime('%I:%M %p').lstrip('0')}"
 
 
+class _PillSlider:
+    """Control deslizable estilo pill (Canvas dibujado a mano -- tk.Scale no
+    da ese look). Rango continuo [minimum, maximum], usado para opacidad."""
+
+    def __init__(self, master, minimum: int, maximum: int, initial: int, on_change):
+        self.minimum = minimum
+        self.maximum = maximum
+        self.width = 70
+        self.height = 14
+        self._value = initial
+        self._on_change = on_change
+        self.canvas = tk.Canvas(
+            master, width=self.width, height=self.height,
+            bg=BG_COLOR, highlightthickness=0, cursor="hand2",
+        )
+        self.canvas.bind("<Button-1>", self._on_drag)
+        self.canvas.bind("<B1-Motion>", self._on_drag)
+        self._draw()
+
+    def _knob_x(self) -> float:
+        r = self.height / 2
+        ratio = (self._value - self.minimum) / (self.maximum - self.minimum)
+        return r + ratio * (self.width - self.height)
+
+    def _draw(self) -> None:
+        c = self.canvas
+        c.delete("all")
+        r = self.height / 2
+        c.create_oval(0, 0, self.height, self.height, fill=BAR_BG_COLOR, outline="")
+        c.create_oval(self.width - self.height, 0, self.width, self.height, fill=BAR_BG_COLOR, outline="")
+        c.create_rectangle(r, 0, self.width - r, self.height, fill=BAR_BG_COLOR, outline="")
+        knob_x = self._knob_x()
+        c.create_oval(0, 0, self.height, self.height, fill=BAR_FG_COLOR, outline="")
+        if knob_x > r:
+            c.create_rectangle(r, 0, knob_x, self.height, fill=BAR_FG_COLOR, outline="")
+        pad = max(1, round(self.height * 0.14))
+        c.create_oval(
+            knob_x - r + pad, pad, knob_x + r - pad, self.height - pad,
+            fill="#FFFFFF", outline="",
+        )
+
+    def _on_drag(self, event: tk.Event) -> None:
+        r = self.height / 2
+        x = max(r, min(event.x, self.width - r))
+        ratio = (x - r) / (self.width - self.height)
+        self._value = round(self.minimum + ratio * (self.maximum - self.minimum))
+        self._draw()
+        self._on_change(self._value)
+
+    def pack(self, **kwargs) -> None:
+        self.canvas.pack(**kwargs)
+
+    def scale_to(self, width: int, height: int) -> None:
+        self.width, self.height = max(width, 20), max(height, 8)
+        self.canvas.configure(width=self.width, height=self.height)
+        self._draw()
+
+
+class _PillToggle:
+    """Interruptor on/off estilo pill, mismo look que `_PillSlider`."""
+
+    def __init__(self, master, initial: bool, on_change):
+        self.width = 30
+        self.height = 16
+        self._value = initial
+        self._on_change = on_change
+        self.canvas = tk.Canvas(
+            master, width=self.width, height=self.height,
+            bg=BG_COLOR, highlightthickness=0, cursor="hand2",
+        )
+        self.canvas.bind("<Button-1>", self._on_click)
+        self._draw()
+
+    def _draw(self) -> None:
+        c = self.canvas
+        c.delete("all")
+        r = self.height / 2
+        color = BAR_FG_COLOR if self._value else BAR_BG_COLOR
+        c.create_oval(0, 0, self.height, self.height, fill=color, outline="")
+        c.create_oval(self.width - self.height, 0, self.width, self.height, fill=color, outline="")
+        c.create_rectangle(r, 0, self.width - r, self.height, fill=color, outline="")
+        knob_x = self.width - r if self._value else r
+        pad = max(1, round(self.height * 0.14))
+        c.create_oval(
+            knob_x - r + pad, pad, knob_x + r - pad, self.height - pad,
+            fill="#FFFFFF", outline="",
+        )
+
+    def _on_click(self, _event: tk.Event) -> None:
+        self._value = not self._value
+        self._draw()
+        self._on_change(self._value)
+
+    def pack(self, **kwargs) -> None:
+        self.canvas.pack(**kwargs)
+
+    def scale_to(self, width: int, height: int) -> None:
+        self.width, self.height = max(width, 22), max(height, 10)
+        self.canvas.configure(width=self.width, height=self.height)
+        self._draw()
+
+
 class Popup:
     def __init__(self, root: tk.Tk):
         self._window = tk.Toplevel(root)
@@ -158,27 +260,12 @@ class Popup:
         self._close_btn.bind("<Leave>", lambda _e: self._close_btn.configure(fg=SUBTEXT_COLOR))
         self._close_btn.bind("<Button-1>", lambda _e: self.hide())
 
-        self._opacity_scale = tk.Scale(
-            self._titlebar,
-            from_=20,
-            to=100,
-            orient="horizontal",
-            length=70,
-            width=6,
-            sliderlength=10,
-            showvalue=False,
-            bg=BG_COLOR,
-            troughcolor=BAR_BG_COLOR,
-            activebackground=BAR_FG_COLOR,
-            highlightthickness=0,
-            bd=0,
-            cursor="hand2",
-            command=self._on_opacity_change,
+        self._opacity_slider = _PillSlider(
+            self._titlebar, 20, 100, int(self._idle_alpha * 100), self._on_opacity_change
         )
-        self._opacity_scale.set(int(self._idle_alpha * 100))
-        self._opacity_scale.pack(side="left", padx=(8, 0), pady=2)
+        self._opacity_slider.pack(side="left", padx=(8, 0), pady=2)
 
-        self._drag_exempt = {self._close_btn, self._opacity_scale}
+        self._drag_exempt = {self._close_btn, self._opacity_slider.canvas}
         self._window.bind("<ButtonPress-1>", self._start_drag)
         self._window.bind("<B1-Motion>", self._on_drag)
 
@@ -206,6 +293,21 @@ class Popup:
         self._resize_grip.bind("<ButtonRelease-1>", lambda _e: setattr(self, "_resizing", False))
         self._drag_exempt.add(self._resize_grip)
 
+        self._sync_enabled = False
+        self._toggle_row = tk.Frame(self._container, bg=BG_COLOR)
+        self._toggle_separator = tk.Frame(self._toggle_row, bg=BAR_BG_COLOR, height=1)
+        self._toggle_separator.pack(fill="x", pady=(0, 10))
+        toggle_inner = tk.Frame(self._toggle_row, bg=BG_COLOR)
+        toggle_inner.pack(fill="x")
+        self._toggle_label = tk.Label(
+            toggle_inner, text="Hide when Claude minimizes", bg=BG_COLOR, fg=TEXT_COLOR,
+            font=(FONT_FAMILY, 12), anchor="w",
+        )
+        self._toggle_label.pack(side="left")
+        self._sync_toggle = _PillToggle(toggle_inner, False, self._on_sync_toggle_change)
+        self._sync_toggle.pack(side="right")
+        self._drag_exempt.add(self._sync_toggle.canvas)
+
         self._rows: list[tk.Frame] = []
         self._visible = False
         self._anchor_cursor: Optional[tuple[int, int]] = None
@@ -226,9 +328,16 @@ class Popup:
         """Tamano de fuente en puntos: solo el zoom manual del usuario."""
         return max(1, round(pt * self._scale))
 
-    def _on_opacity_change(self, value: str) -> None:
-        self._idle_alpha = int(float(value)) / 100.0
+    def _on_opacity_change(self, value: int) -> None:
+        self._idle_alpha = value / 100.0
         self._window.attributes("-alpha", self._idle_alpha)
+
+    def _on_sync_toggle_change(self, value: bool) -> None:
+        self._sync_enabled = value
+
+    @property
+    def sync_with_claude_app(self) -> bool:
+        return self._sync_enabled
 
     def _start_resize(self, event: tk.Event) -> None:
         self._resizing = True
@@ -304,11 +413,12 @@ class Popup:
 
         self._titlebar.configure(height=self._sp(24))
         self._close_btn.configure(font=(FONT_FAMILY, self._fp(10)))
-        self._opacity_scale.configure(
-            length=self._sp(70), width=self._sp(6), sliderlength=self._sp(10)
-        )
+        self._opacity_slider.scale_to(self._sp(70), self._sp(14))
         self._resize_grip.configure(font=(FONT_FAMILY, self._fp(8)))
         self._resize_grip.place_configure(width=self._sp(14), height=self._sp(14))
+        self._toggle_label.configure(font=(FONT_FAMILY, self._fp(12)))
+        self._sync_toggle.scale_to(self._sp(30), self._sp(16))
+        self._toggle_separator.configure(height=self._sp(1))
 
         self._clear_rows()
 
@@ -330,6 +440,11 @@ class Popup:
 
         for index, block in enumerate(limits):
             self._add_row(block, is_first=(index == 0))
+
+        # Se reempaca (no solo se actualiza) para que siempre quede al final,
+        # despues de las filas de datos que se acaban de recrear arriba.
+        self._toggle_row.pack_forget()
+        self._toggle_row.pack(fill="x", pady=(self._sp(14), 0))
 
         self._resize_to_content()
         if self._visible and not self._has_moved and self._anchor_cursor is not None:
