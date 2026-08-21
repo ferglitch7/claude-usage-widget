@@ -140,14 +140,25 @@ def poll_loop(popup: ui.Popup, state: AppState, on_update, stop_event: threading
 def claude_app_watch_loop(
     root: tk.Tk, popup: ui.Popup, state: AppState, stop_event: threading.Event
 ) -> None:
-    """Esconde/muestra el popup en sync con que la app de escritorio de
-    Claude (Claude.exe) este minimizada o no -- nunca reacciona a que otras
-    ventanas (Telegram, el navegador, etc) tomen el foco, solo a esa
-    aplicacion especifica. Solo actua mientras el toggle del popup este
-    encendido; si esta apagado, no hace nada.
+    """Esconde/muestra el popup en sync con la app de escritorio de Claude
+    (Claude.exe), pero el criterio es por MONITOR, no global: si Claude esta
+    en el Monitor 1 y otra app toma el foco tambien en el Monitor 1 (la
+    tapa), el popup se esconde. Si esa otra app se enfoca en un Monitor 2
+    distinto, Claude sigue intacto en su pantalla y el popup no se toca --
+    cambiar de monitor no es lo mismo que taparla. Ignora los momentos en
+    que el propio popup del widget tiene el foco, para no auto-esconderse
+    al interactuar con el. Solo actua mientras el toggle este encendido.
     """
-    was_minimized: Optional[bool] = None
+    own_pid = ctypes.windll.kernel32.GetCurrentProcessId()
+    # was_shown es siempre un bool concreto (nunca None): arranca en lo que
+    # el popup REALMENTE esta mostrando ahora mismo. Antes arrancaba en None
+    # ("no se"), y como el toggle se prende con foco en el propio popup, la
+    # primera transicion real (cambiar a otra app) quedaba "tragada": el
+    # estado interno pasaba a False pero nunca se llamaba a popup.hide(),
+    # dejando el popup visible aunque el codigo ya creyera que estaba oculto.
+    was_shown = popup.visible
     hwnd: Optional[int] = None
+    claude_pid: Optional[int] = None
     while not stop_event.is_set():
         if popup.sync_with_claude_app:
             # Cachea el hwnd -- re-enumerar TODAS las ventanas de Windows
@@ -155,19 +166,37 @@ def claude_app_watch_loop(
             # siendo la misma ventana; solo se re-busca si se cerro.
             if hwnd is None or not ctypes.windll.user32.IsWindow(hwnd):
                 hwnd = claude_app_watcher.find_claude_app_hwnd()
-                was_minimized = None
+                claude_pid = claude_app_watcher.pid_for_hwnd(hwnd) if hwnd else None
+                was_shown = popup.visible
 
             if hwnd is not None:
-                minimized = claude_app_watcher.is_minimized(hwnd)
-                if was_minimized is not None and minimized != was_minimized:
-                    if minimized:
-                        root.after(0, popup.hide)
+                front_hwnd = claude_app_watcher.get_foreground_hwnd()
+                front_pid = claude_app_watcher.pid_for_hwnd(front_hwnd) if front_hwnd else None
+
+                if front_pid == own_pid:
+                    should_show = was_shown  # foco en nuestro propio popup: no decidir nada
+                elif front_pid == claude_pid:
+                    should_show = True
+                else:
+                    claude_monitor = claude_app_watcher.monitor_for_hwnd(hwnd)
+                    front_monitor = (
+                        claude_app_watcher.monitor_for_hwnd(front_hwnd) if front_hwnd else None
+                    )
+                    if front_monitor == claude_monitor:
+                        should_show = False
                     else:
+                        should_show = was_shown  # otro monitor: no molesta a Claude
+
+                if should_show != was_shown:
+                    if should_show:
                         root.after(0, popup.show, state, ui.get_cursor_pos())
-                was_minimized = minimized
+                    else:
+                        root.after(0, popup.hide)
+                    was_shown = should_show
         else:
             hwnd = None
-            was_minimized = None
+            claude_pid = None
+            was_shown = popup.visible
         stop_event.wait(CLAUDE_APP_WATCH_INTERVAL_SECONDS)
 
 

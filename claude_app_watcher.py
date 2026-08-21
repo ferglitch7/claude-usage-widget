@@ -1,12 +1,16 @@
 """Detecta si la app de escritorio de Claude (Claude.exe, la app oficial de
-Anthropic para Windows -- no el navegador) esta minimizada, para poder
+Anthropic para Windows -- no el navegador) esta en primer plano, para poder
 esconder/mostrar el popup del widget en sync con ella.
 
 Se usa el nombre de proceso ("Claude.exe") en vez de buscar por titulo de
 ventana, ya que el titulo puede cambiar (nombre de la conversacion activa,
-idioma, etc). Deliberadamente NO reacciona a que otras apps (Telegram,
-el navegador, etc) tomen el foco -- solo le importa el estado de
-minimizado/restaurado de esa ventana especifica.
+idioma, etc).
+
+El criterio es por monitor, no global: con varios monitores conectados,
+si Claude esta en el Monitor 1 y abres/enfocas otra app tambien en el
+Monitor 1 (la tapa), el popup se esconde. Pero si esa otra app la abres en
+el Monitor 2, Claude sigue intacto en su pantalla -- no hay razon para
+esconder el popup solo porque el foco global de Windows cambio de monitor.
 """
 
 from __future__ import annotations
@@ -16,6 +20,7 @@ import ctypes.wintypes as wintypes
 from typing import Optional
 
 PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+MONITOR_DEFAULTTONEAREST = 2
 OWN_EXE_NAME = "claudeusagewidget.exe"
 
 
@@ -70,8 +75,23 @@ def find_claude_app_hwnd() -> Optional[int]:
     return found[0] if found else None
 
 
-def is_minimized(hwnd: int) -> bool:
+def pid_for_hwnd(hwnd: int) -> Optional[int]:
+    pid = wintypes.DWORD()
+    ctypes.windll.user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+    return pid.value or None
+
+
+def monitor_for_hwnd(hwnd: int) -> Optional[int]:
+    """Handle del monitor (HMONITOR) donde vive esa ventana ahora mismo."""
     try:
-        return bool(ctypes.windll.user32.IsIconic(hwnd))
+        return ctypes.windll.user32.MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST) or None
     except Exception:
-        return False
+        return None
+
+
+def get_foreground_hwnd() -> Optional[int]:
+    try:
+        hwnd = ctypes.windll.user32.GetForegroundWindow()
+    except Exception:
+        return None
+    return hwnd or None

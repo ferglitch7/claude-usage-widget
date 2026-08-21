@@ -20,8 +20,6 @@ WARNING_THRESHOLD = 80
 MIN_SCALE = 0.75
 MAX_SCALE = 1.6
 
-IDLE_ALPHA = 1.0
-
 DWMWA_WINDOW_CORNER_PREFERENCE = 33
 DWMWCP_ROUND = 2
 
@@ -121,66 +119,8 @@ def _format_resets(kind: str, resets_at: Optional[datetime]) -> str:
     return f"Resets {local.strftime('%a')} {local.strftime('%I:%M %p').lstrip('0')}"
 
 
-class _PillSlider:
-    """Control deslizable estilo pill (Canvas dibujado a mano -- tk.Scale no
-    da ese look). Rango continuo [minimum, maximum], usado para opacidad."""
-
-    def __init__(self, master, minimum: int, maximum: int, initial: int, on_change):
-        self.minimum = minimum
-        self.maximum = maximum
-        self.width = 70
-        self.height = 14
-        self._value = initial
-        self._on_change = on_change
-        self.canvas = tk.Canvas(
-            master, width=self.width, height=self.height,
-            bg=BG_COLOR, highlightthickness=0, cursor="hand2",
-        )
-        self.canvas.bind("<Button-1>", self._on_drag)
-        self.canvas.bind("<B1-Motion>", self._on_drag)
-        self._draw()
-
-    def _knob_x(self) -> float:
-        r = self.height / 2
-        ratio = (self._value - self.minimum) / (self.maximum - self.minimum)
-        return r + ratio * (self.width - self.height)
-
-    def _draw(self) -> None:
-        c = self.canvas
-        c.delete("all")
-        r = self.height / 2
-        c.create_oval(0, 0, self.height, self.height, fill=BAR_BG_COLOR, outline="")
-        c.create_oval(self.width - self.height, 0, self.width, self.height, fill=BAR_BG_COLOR, outline="")
-        c.create_rectangle(r, 0, self.width - r, self.height, fill=BAR_BG_COLOR, outline="")
-        knob_x = self._knob_x()
-        c.create_oval(0, 0, self.height, self.height, fill=BAR_FG_COLOR, outline="")
-        if knob_x > r:
-            c.create_rectangle(r, 0, knob_x, self.height, fill=BAR_FG_COLOR, outline="")
-        pad = max(1, round(self.height * 0.14))
-        c.create_oval(
-            knob_x - r + pad, pad, knob_x + r - pad, self.height - pad,
-            fill="#FFFFFF", outline="",
-        )
-
-    def _on_drag(self, event: tk.Event) -> None:
-        r = self.height / 2
-        x = max(r, min(event.x, self.width - r))
-        ratio = (x - r) / (self.width - self.height)
-        self._value = round(self.minimum + ratio * (self.maximum - self.minimum))
-        self._draw()
-        self._on_change(self._value)
-
-    def pack(self, **kwargs) -> None:
-        self.canvas.pack(**kwargs)
-
-    def scale_to(self, width: int, height: int) -> None:
-        self.width, self.height = max(width, 20), max(height, 8)
-        self.canvas.configure(width=self.width, height=self.height)
-        self._draw()
-
-
 class _PillToggle:
-    """Interruptor on/off estilo pill, mismo look que `_PillSlider`."""
+    """Interruptor on/off estilo pill (Canvas dibujado a mano)."""
 
     def __init__(self, master, initial: bool, on_change):
         self.width = 30
@@ -244,8 +184,6 @@ class Popup:
         self._resize_anchor_pos = (0, 0)
         self._resize_refresh_job: Optional[str] = None
         self._last_state = None
-        self._idle_alpha = IDLE_ALPHA
-        self._window.attributes("-alpha", self._idle_alpha)
 
         self._titlebar = tk.Frame(self._window, bg=BG_COLOR, height=24)
         self._titlebar.pack(fill="x", side="top")
@@ -260,12 +198,7 @@ class Popup:
         self._close_btn.bind("<Leave>", lambda _e: self._close_btn.configure(fg=SUBTEXT_COLOR))
         self._close_btn.bind("<Button-1>", lambda _e: self.hide())
 
-        self._opacity_slider = _PillSlider(
-            self._titlebar, 20, 100, int(self._idle_alpha * 100), self._on_opacity_change
-        )
-        self._opacity_slider.pack(side="left", padx=(8, 0), pady=2)
-
-        self._drag_exempt = {self._close_btn, self._opacity_slider.canvas}
+        self._drag_exempt = {self._close_btn}
         self._window.bind("<ButtonPress-1>", self._start_drag)
         self._window.bind("<B1-Motion>", self._on_drag)
 
@@ -300,7 +233,7 @@ class Popup:
         toggle_inner = tk.Frame(self._toggle_row, bg=BG_COLOR)
         toggle_inner.pack(fill="x")
         self._toggle_label = tk.Label(
-            toggle_inner, text="Hide when Claude minimizes", bg=BG_COLOR, fg=TEXT_COLOR,
+            toggle_inner, text="Sync with Claude app", bg=BG_COLOR, fg=TEXT_COLOR,
             font=(FONT_FAMILY, 12), anchor="w",
         )
         self._toggle_label.pack(side="left")
@@ -327,10 +260,6 @@ class Popup:
     def _fp(self, pt: float) -> int:
         """Tamano de fuente en puntos: solo el zoom manual del usuario."""
         return max(1, round(pt * self._scale))
-
-    def _on_opacity_change(self, value: int) -> None:
-        self._idle_alpha = value / 100.0
-        self._window.attributes("-alpha", self._idle_alpha)
 
     def _on_sync_toggle_change(self, value: bool) -> None:
         self._sync_enabled = value
@@ -413,7 +342,6 @@ class Popup:
 
         self._titlebar.configure(height=self._sp(24))
         self._close_btn.configure(font=(FONT_FAMILY, self._fp(10)))
-        self._opacity_slider.scale_to(self._sp(70), self._sp(14))
         self._resize_grip.configure(font=(FONT_FAMILY, self._fp(8)))
         self._resize_grip.place_configure(width=self._sp(14), height=self._sp(14))
         self._toggle_label.configure(font=(FONT_FAMILY, self._fp(12)))
@@ -523,7 +451,6 @@ class Popup:
             self.show(state, cursor_pos)
 
     def show(self, state, cursor_pos: tuple[int, int]) -> None:
-        self._window.attributes("-alpha", self._idle_alpha)
         self._visible = True
         self._anchor_cursor = cursor_pos
         self._dpi_scale = get_dpi_for(*cursor_pos) / DEFAULT_DPI
