@@ -19,6 +19,7 @@ POPUP_WIDTH = 300
 WARNING_THRESHOLD = 80
 MIN_SCALE = 0.75
 MAX_SCALE = 1.6
+DEFAULT_SCALE = 0.8
 
 DWMWA_WINDOW_CORNER_PREFERENCE = 33
 DWMWCP_ROUND = 2
@@ -176,11 +177,11 @@ class Popup:
         self._dragging = False
         self._drag_start = (0, 0)
         self._window_start = (0, 0)
-        self._scale = 1.0
+        self._scale = DEFAULT_SCALE
         self._dpi_scale = 1.0
         self._resizing = False
         self._resize_start_x = 0
-        self._resize_start_scale = 1.0
+        self._resize_start_scale = DEFAULT_SCALE
         self._resize_anchor_pos = (0, 0)
         self._resize_refresh_job: Optional[str] = None
         self._last_state = None

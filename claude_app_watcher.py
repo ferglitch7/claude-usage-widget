@@ -23,6 +23,28 @@ PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 MONITOR_DEFAULTTONEAREST = 2
 OWN_EXE_NAME = "claudeusagewidget.exe"
 
+# Procesos de UI del sistema que son SIEMPRE superficies transitorias
+# (Inicio, buscador, panel de entrada) -- corren en su propio proceso
+# dedicado, nunca son "el escritorio", asi que basta con el nombre.
+# explorer.exe NO va aca: ese mismo proceso es dueno tanto del escritorio
+# vacio (Progman/WorkerW) como del flyout de iconos ocultos de la bandeja,
+# y solo el segundo debe ignorarse -- el escritorio vacio SI debe contar
+# como "Claude ya no esta a la vista" (ej. al minimizarla sin abrir nada
+# mas). Por eso explorer.exe se filtra aparte, por CLASE de ventana.
+SHELL_SURFACE_PROCESS_NAMES = {
+    "shellexperiencehost.exe",
+    "startmenuexperiencehost.exe",
+    "searchhost.exe",
+    "textinputhost.exe",
+}
+
+# Clases de ventana de explorer.exe que son overlays transitorios (bandeja)
+# y no el escritorio en si.
+SHELL_OVERLAY_CLASS_NAMES = {
+    "topLevelWindowForOverflowXamlIsland".lower(),  # bandeja de iconos ocultos, Windows 11
+    "notifyiconoverflowwindow",                      # bandeja de iconos ocultos, Windows 10
+}
+
 
 def _process_name_for(hwnd: int) -> Optional[str]:
     pid = wintypes.DWORD()
@@ -95,3 +117,24 @@ def get_foreground_hwnd() -> Optional[int]:
     except Exception:
         return None
     return hwnd or None
+
+
+def _class_name_for(hwnd: int) -> str:
+    buf = ctypes.create_unicode_buffer(256)
+    ctypes.windll.user32.GetClassNameW(hwnd, buf, 256)
+    return buf.value
+
+
+def is_shell_surface(hwnd: int) -> bool:
+    """True si esa ventana es UI transitoria del sistema (flyout de la
+    bandeja, Inicio, buscador) -- pero NO el escritorio vacio en si
+    (Progman/WorkerW), que tambien es de explorer.exe pero SI cuenta como
+    'no hay ninguna app real a la vista'."""
+    name = (_process_name_for(hwnd) or "").lower()
+    if not name:
+        return False
+    if name in SHELL_SURFACE_PROCESS_NAMES:
+        return True
+    if name == "explorer.exe":
+        return _class_name_for(hwnd).lower() in SHELL_OVERLAY_CLASS_NAMES
+    return False

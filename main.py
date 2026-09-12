@@ -7,14 +7,16 @@ import datetime
 import math
 import subprocess
 import sys
+import tempfile
 import threading
 import traceback
 import tkinter as tk
-import webbrowser
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Optional
 
 import pystray
+import requests
 from PIL import Image, ImageDraw
 
 import api_client
@@ -147,7 +149,11 @@ def claude_app_watch_loop(
     distinto, Claude sigue intacto en su pantalla y el popup no se toca --
     cambiar de monitor no es lo mismo que taparla. Ignora los momentos en
     que el propio popup del widget tiene el foco, para no auto-esconderse
-    al interactuar con el. Solo actua mientras el toggle este encendido.
+    al interactuar con el, y las superficies de UI del propio Windows
+    (bandeja, Inicio, buscador). Si Claude se cierra del todo (no solo se
+    minimiza), el popup tambien se esconde -- no tiene sentido dejarlo
+    abierto sin Claude con quien sincronizarlo. Solo actua mientras el
+    toggle este encendido.
     """
     own_pid = ctypes.windll.kernel32.GetCurrentProcessId()
     # was_shown es siempre un bool concreto (nunca None): arranca en lo que
@@ -177,6 +183,10 @@ def claude_app_watch_loop(
                     should_show = was_shown  # foco en nuestro propio popup: no decidir nada
                 elif front_pid == claude_pid:
                     should_show = True
+                elif front_hwnd is not None and claude_app_watcher.is_shell_surface(front_hwnd):
+                    # UI del propio Windows (bandeja, Inicio, buscador) --
+                    # no es "otra app" tapando a Claude, no decidir nada.
+                    should_show = was_shown
                 else:
                     claude_monitor = claude_app_watcher.monitor_for_hwnd(hwnd)
                     front_monitor = (
@@ -193,6 +203,13 @@ def claude_app_watch_loop(
                     else:
                         root.after(0, popup.hide)
                     was_shown = should_show
+            elif was_shown:
+                # Claude ya no esta corriendo (se cerro del todo, no solo
+                # minimizado) -- antes esto no hacia nada y el popup se
+                # quedaba abierto para siempre. No tiene sentido dejarlo
+                # abierto si ya no hay Claude con quien sincronizarlo.
+                root.after(0, popup.hide)
+                was_shown = False
         else:
             hwnd = None
             claude_pid = None
@@ -200,11 +217,96 @@ def claude_app_watch_loop(
         stop_event.wait(CLAUDE_APP_WATCH_INTERVAL_SECONDS)
 
 
-def update_check_loop(tray_icon: pystray.Icon, update_state: dict, stop_event: threading.Event) -> None:
-    """Avisa si hay una version mas nueva -- nunca descarga ni instala sola.
+def _download_and_launch_installer(url: str, on_launched=None) -> None:
+    """Descarga el instalador nuevo a una carpeta temporal y lo abre.
 
-    El usuario decide cuando actualizar: clic en el item de menu abre el
-    link de descarga en el navegador, igual que la primera instalacion.
+    Corre en un hilo aparte porque la descarga puede tardar unos segundos y
+    no debe congelar la UI. `on_launched` (si se pasa) se llama justo
+    despues de arrancar el instalador -- se usa para que esta instancia se
+    cierre sola. Probado en la practica: `CloseApplications=force` de Inno
+    Setup (que negocia el cierre via Restart Manager) no cierra esta app de
+    forma confiable por tener hilos de fondo + bandeja sin el manejo de
+    mensajes que Restart Manager espera, y termina mostrando un dialogo de
+    error pidiendole al usuario que cierre todo a mano. Auto-cerrarse antes
+    de que el instalador necesite tocar el archivo evita ese problema del
+    todo (RestartApplications=yes en el .iss lo vuelve a abrir al terminar).
+    """
+    def _worker() -> None:
+        try:
+            response = requests.get(url, timeout=30)
+            response.raise_for_status()
+            installer_path = Path(tempfile.gettempdir()) / "ClaudeUsageWidget-Setup.exe"
+            installer_path.write_bytes(response.content)
+            subprocess.Popen([str(installer_path)])
+            if on_launched is not None:
+                on_launched()
+        except Exception as exc:
+            log_error("descarga/lanzamiento del instalador de actualizacion", exc)
+
+    threading.Thread(target=_worker, daemon=True).start()
+
+
+def _show_update_notice(root: tk.Tk, version: str, url: str, on_update_now, on_later) -> None:
+    """Ventana propia (no toast de Windows) avisando de una version nueva.
+
+    Un .exe suelto de PyInstaller no puede registrar botones de accion en
+    notificaciones nativas de Windows de forma confiable (requiere un
+    AppUserModelID de paquete instalado), asi que se usa una ventanita con
+    el mismo estilo oscuro del popup en su lugar.
+    """
+    win = tk.Toplevel(root)
+    win.title("Claude Usage Widget")
+    win.configure(bg="#202020")
+    win.attributes("-topmost", True)
+    win.resizable(False, False)
+
+    def _close(callback) -> None:
+        win.destroy()
+        callback()
+
+    win.protocol("WM_DELETE_WINDOW", lambda: _close(on_later))
+
+    tk.Label(
+        win, text=f"Version {version} disponible", bg="#202020", fg="#FFFFFF",
+        font=("Segoe UI", 12), justify="left", anchor="w",
+    ).pack(fill="x", padx=20, pady=(20, 4))
+    tk.Label(
+        win, text="Hay una nueva version del widget lista para instalar.",
+        bg="#202020", fg="#B0B0B0", font=("Segoe UI", 10),
+        wraplength=260, justify="left", anchor="w",
+    ).pack(fill="x", padx=20, pady=(0, 16))
+
+    btn_frame = tk.Frame(win, bg="#202020")
+    btn_frame.pack(fill="x", padx=20, pady=(0, 20))
+
+    tk.Button(
+        btn_frame, text="Mas tarde", command=lambda: _close(on_later),
+        bg="#3A3A3A", fg="#FFFFFF", activebackground="#4A4A4A", activeforeground="#FFFFFF",
+        relief="flat", padx=14, pady=6, cursor="hand2", bd=0,
+    ).pack(side="left")
+    tk.Button(
+        btn_frame, text="Actualizar ahora", command=lambda: _close(on_update_now),
+        bg="#4A9EFF", fg="#FFFFFF", activebackground="#3D8AE0", activeforeground="#FFFFFF",
+        relief="flat", padx=14, pady=6, cursor="hand2", bd=0,
+    ).pack(side="right")
+
+    win.update_idletasks()
+    w, h = win.winfo_width(), win.winfo_height()
+    sw, sh = win.winfo_screenwidth(), win.winfo_screenheight()
+    win.geometry(f"{w}x{h}+{(sw - w) // 2}+{(sh - h) // 2}")
+    win.deiconify()
+    win.lift()
+    win.focus_force()
+
+
+def update_check_loop(
+    root: tk.Tk, update_state: dict, stop_event: threading.Event, quit_callback
+) -> None:
+    """Avisa si hay una version mas nueva con una ventana propia (ver
+    `_show_update_notice`) -- nunca descarga ni instala sin que el usuario
+    haga clic en "Actualizar ahora". "Mas tarde" descarta el aviso solo
+    para esa version especifica; si sale una version mas nueva todavia, se
+    vuelve a mostrar.
     """
     while not stop_event.is_set():
         info = update_checker.check_for_update()
@@ -212,14 +314,13 @@ def update_check_loop(tray_icon: pystray.Icon, update_state: dict, stop_event: t
             update_state["available"] = True
             update_state["version"] = info["version"]
             update_state["url"] = info["url"]
-            try:
-                tray_icon.notify(
-                    f"Version {info['version']} disponible. "
-                    "Clic derecho -> Actualizar disponible.",
-                    "Claude Usage Widget",
+            if info["version"] != update_state.get("dismissed_version"):
+                version, url = info["version"], info["url"]
+                root.after(
+                    0, _show_update_notice, root, version, url,
+                    lambda u=url: _download_and_launch_installer(u, on_launched=quit_callback),
+                    lambda v=version: update_state.__setitem__("dismissed_version", v),
                 )
-            except Exception:
-                pass
         stop_event.wait(UPDATE_CHECK_INTERVAL_SECONDS)
 
 
@@ -290,7 +391,9 @@ def main() -> None:
                 pass
 
     state = AppState()
-    update_state: dict = {"available": False, "version": None, "url": None}
+    update_state: dict = {
+        "available": False, "version": None, "url": None, "dismissed_version": None,
+    }
     stop_event = threading.Event()
 
     root = tk.Tk()
@@ -331,9 +434,12 @@ def main() -> None:
         icon.stop()
         root.after(0, root.destroy)
 
+    def _quit_for_update() -> None:
+        root.after(0, on_quit, tray_icon)
+
     def on_update_click(icon, item=None) -> None:
         if update_state.get("url"):
-            webbrowser.open(update_state["url"])
+            _download_and_launch_installer(update_state["url"], on_launched=_quit_for_update)
 
     menu = pystray.Menu(
         pystray.MenuItem("Mostrar/ocultar", on_left_click, default=True, visible=False),
@@ -343,7 +449,7 @@ def main() -> None:
             visible=lambda item: update_state["available"],
         ),
         pystray.MenuItem("Iniciar sesion", on_login),
-        pystray.MenuItem("Actualizar ahora", on_refresh_now),
+        pystray.MenuItem("Actualizar uso ahora", on_refresh_now),
         pystray.MenuItem("Salir", on_quit),
         pystray.Menu.SEPARATOR,
         pystray.MenuItem(f"v{VERSION}", lambda icon, item: None, enabled=False),
@@ -361,7 +467,9 @@ def main() -> None:
     claude_app_watch_thread.start()
 
     update_thread = threading.Thread(
-        target=update_check_loop, args=(tray_icon, update_state, stop_event), daemon=True
+        target=update_check_loop,
+        args=(root, update_state, stop_event, _quit_for_update),
+        daemon=True,
     )
     update_thread.start()
 

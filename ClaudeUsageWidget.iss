@@ -3,7 +3,7 @@
 ; en el Menu Inicio y arranque automatico opcional.
 
 #define MyAppName "Claude Usage Widget"
-#define MyAppVersion "1.3.0"
+#define MyAppVersion "1.4.0"
 #define MyAppExeName "ClaudeUsageWidget.exe"
 
 [Setup]
@@ -20,6 +20,8 @@ Compression=lzma
 SolidCompression=yes
 UninstallDisplayIcon={app}\{#MyAppExeName}
 ArchitecturesInstallIn64BitMode=x64compatible
+CloseApplications=force
+RestartApplications=yes
 
 [Languages]
 Name: "spanish"; MessagesFile: "compiler:Languages\Spanish.isl"
