@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Portfolio</title>
+<meta name="description" content="Tu portfolio en vivo: crypto, acciones, metales y efectivo.">
+<meta name="theme-color" content="#f2f2f7" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Portfolio">
+<meta name="format-detection" content="telephone=no">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<link rel="preconnect" href="https://api.exchange.coinbase.com">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div id="app">
+  <div id="page">
+    <div class="nav" id="nav" aria-hidden="true">
+      <span class="nav-title" id="nav-title"></span>
+    </div>
+
+    <main class="scroll" id="scroll">
+      <div class="ptr" id="ptr" aria-hidden="true"><span class="spinner"></span></div>
+
+      <div class="shell">
+        <header class="top">
+          <h1 class="brand">Portfolio <span class="live" id="live" title=""></span></h1>
+          <div class="top-actions">
+            <button class="icon-btn" id="btn-settings" type="button" aria-label="Ajustes"></button>
+            <button class="icon-btn solid" id="btn-add" type="button" aria-label="Añadir activo"></button>
+          </div>
+        </header>
+
+        <section class="hero" id="hero" aria-label="Balance total">
+          <button class="balance" id="balance" type="button" aria-label="Mostrar u ocultar el balance">
+            <span class="roller" id="roller"></span>
+          </button>
+          <button class="pill" id="change" type="button" hidden></button>
+        </section>
+
+        <section class="alloc" id="alloc" hidden aria-label="Distribución">
+          <div class="alloc-bar" id="alloc-bar"></div>
+          <div class="alloc-legend" id="alloc-legend"></div>
+        </section>
+
+        <div class="notice" id="notice" hidden></div>
+
+        <section class="card list" id="list" aria-label="Activos"></section>
+
+        <section class="empty" id="empty" hidden>
+          <div class="empty-logos" id="empty-logos"></div>
+          <h2>Todo tu patrimonio, en vivo</h2>
+          <p>Crypto, acciones, metales y efectivo en un solo balance.</p>
+          <button class="btn-primary" id="empty-add" type="button">Añadir activo</button>
+          <button class="btn-text" id="empty-demo" type="button">Ver un ejemplo</button>
+        </section>
+
+        <div class="demo-bar" id="demo-bar" hidden>
+          <span>Ejemplo</span>
+          <button class="btn-text" id="demo-exit" type="button">Salir</button>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <div id="sheets"></div>
+  <div id="toasts"></div>
+</div>
+
+<noscript><p style="padding:24px;font-family:system-ui">Esta app necesita JavaScript.</p></noscript>
+<script type="module" src="js/main.js"></script>
+</body>
+</html>
