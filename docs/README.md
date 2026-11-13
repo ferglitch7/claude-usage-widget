@@ -20,6 +20,18 @@ Sube la carpeta tal cual a cualquier hosting estático con HTTPS (Cloudflare
 Pages, Netlify, Vercel, GitHub Pages). En el iPhone: abrirla en Safari →
 Compartir → **Añadir a pantalla de inicio**.
 
+### En tu tailnet (Tailscale, Windows)
+
+En PowerShell, en la máquina que la va a servir:
+
+```
+irm https://raw.githubusercontent.com/ferglitch7/claude-usage-widget/claude/serene-davinci-syt3d3/docs/tools/serve-tailscale.ps1 | iex
+```
+
+Descarga la app en `%USERPROFILE%\portfolio`, la publica con `tailscale serve`
+en un puerto HTTPS libre y muestra la dirección. Volver a ejecutarlo actualiza
+los archivos y conserva la dirección.
+
 ## De dónde salen los precios
 
 | Clase | Fuente | Frecuencia | Llave |
