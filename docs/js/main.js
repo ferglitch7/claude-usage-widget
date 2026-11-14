@@ -1,21 +1,36 @@
-// Screens and wiring: home (balance, allocation, list), add, detail, settings.
+// Screens and wiring: home (balance, chart, allocation, list), add, detail, settings.
 
 import {
   state, subscribe, addHolding, updateHolding, removeHolding, restoreHolding,
-  setSetting, replaceAll, exportData, getHolding, enterDemo, exitDemo, isDemo,
+  setSetting, replaceAll, exportData, exportObject, getHolding, enterDemo, exitDemo, isDemo,
 } from './store.js';
 import * as P from './prices.js';
+import * as H from './history.js';
 import * as F from './format.js';
 import { KINDS, UNITS, METALS, CRYPTO, STOCKS, CASH, searchLocal, searchRemote, newCustomAsset } from './catalog.js';
 import { h, spring, pan, rubber, haptic, ICONS, reduceMotion } from './motion.js';
 import { logo } from './logo.js';
 import { createChart } from './chart.js';
 import { openSheet, makeView, toast } from './sheet.js';
+import { Roller, segmented, setPill, toggle, sparkEl, drawSpark } from './ui.js';
+import { marketSeries, realSeries, rangeForSpan } from './series.js';
+import { snapshots, recordSnapshot, replaceSnapshots } from './snapshots.js';
+import { targets, plan, openTargets } from './targets.js';
+import { loadStats } from './stats.js';
+import { initBackup, scheduleBackup, backupStatus, listBackups, fetchBackup, device, onBackup } from './backup.js';
 
 const $ = id => document.getElementById(id);
 const ccy = () => state.settings.ccy;
 const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
 const EASE = 'cubic-bezier(0.2, 0.8, 0.2, 1)';
+const RANGE_LABEL = { '1D': '24 h', '1S': '7 días', '1M': '30 días', '1A': '1 año' };
+const meter = document.createElement('canvas').getContext('2d');
+
+// The balance can also be counted in bitcoin or in ounces of gold; both are
+// followed all the time so switching is instant.
+const BTC = CRYPTO.find(a => a.cg === 'bitcoin');
+const XAU = METALS[0];
+const UNIT_CYCLE = ['ccy', 'btc', 'xau'];
 
 // ============================================================================
 // Valuation
@@ -23,7 +38,7 @@ const EASE = 'cubic-bezier(0.2, 0.8, 0.2, 1)';
 
 function valuation() {
   const r = P.rate(ccy());
-  let total = 0, day = 0, hasDay = false, cost = 0, costValue = 0;
+  let total = 0, day = 0, hasDay = false, cost = 0, costValue = 0, loading = false;
   const rows = state.holdings.map(a => {
     const q = P.quoteOf(a);
     const value = q ? q.p * a.qty * r : null;
@@ -32,6 +47,7 @@ function valuation() {
     const gainAbs = q && a.cost != null ? (q.p - a.cost) * a.qty * r : null;
     const gainPct = q && a.cost ? q.p / a.cost - 1 : null;
     if (value != null) total += value;
+    else if (a.kind !== 'stock' || P.stockState() === 'ok') loading = true; // a price is still on its way
     if (dayAbs != null) { day += dayAbs; hasDay = true; }
     if (gainAbs != null) { cost += a.cost * a.qty * r; costValue += value; }
     return { a, q, value, dayAbs, dayPct, gainAbs, gainPct };
@@ -40,11 +56,19 @@ function valuation() {
   const kinds = new Map();
   for (const row of rows) if (row.value) kinds.set(row.a.kind, (kinds.get(row.a.kind) || 0) + row.value);
   return {
-    rows, total,
+    rows, total, totalUsd: total / r, rate: r, loading,
     day: hasDay && total - day > 0 ? { abs: day, pct: day / (total - day) } : null,
     gain: cost > 0 ? { abs: costValue - cost, pct: costValue / cost - 1 } : null,
     kinds: [...kinds].sort((x, y) => y[1] - x[1]),
   };
+}
+
+/** The asset the balance is counted in, or null for the display currency. */
+function unitNow() {
+  const id = state.settings.unit;
+  const asset = id === 'btc' ? BTC : id === 'xau' ? XAU : null;
+  const q = asset && P.quoteOf(asset);
+  return q ? { id, asset, usd: q.p, prev: q.prev } : null;
 }
 
 function qtyLabel(a) {
@@ -58,128 +82,127 @@ function qtyLabel(a) {
 }
 
 // ============================================================================
-// Rolling number (the balance)
-// ============================================================================
-
-class Roller {
-  constructor(el) { this.el = el; this.slots = []; }
-
-  /** parts come from Intl formatToParts; dir > 0 rolls digits upwards. */
-  set(parts, dir = 0) {
-    const chars = [];
-    let seenInt = false;
-    for (const p of parts) {
-      let cls = '';
-      if (p.type === 'fraction' || p.type === 'decimal') cls = 'minor';
-      else if (p.type === 'currency' || p.type === 'literal') cls = seenInt ? 'sym after' : 'sym';
-      if (p.type === 'integer') seenInt = true;
-      for (const ch of p.value) chars.push({ ch: ch === ' ' ? ' ' : ch, cls });
-    }
-    const animate = this.slots.length > 0 && dir !== 0 && !reduceMotion();
-    const n = chars.length, next = [];
-    // Slots are matched from the right so digits keep their place value.
-    for (let i = 0; i < n; i++) {
-      const c = chars[n - 1 - i];
-      let slot = this.slots[i];
-      if (!slot) {
-        slot = { el: h('span.slot'), cur: null, ch: null, cls: null };
-        this.el.prepend(slot.el);
-      }
-      this.fill(slot, c, dir, animate);
-      next.push(slot);
-    }
-    for (let i = n; i < this.slots.length; i++) this.slots[i].el.remove();
-    this.slots = next;
-  }
-
-  fill(slot, c, dir, animate) {
-    if (slot.ch === c.ch && slot.cls === c.cls) return;
-    slot.el.className = 'slot ' + c.cls;
-    const fresh = h('span', { text: c.ch });
-    const old = slot.cur;
-    slot.el.append(fresh);
-    if (old) {
-      if (animate && /\d/.test(c.ch)) {
-        const off = dir > 0 ? 1 : -1, opt = { duration: 460, easing: EASE };
-        old.classList.add('out');
-        old.animate([{ transform: 'translateY(0)', opacity: 1 }, { transform: `translateY(${-off * 80}%)`, opacity: 0 }], opt).onfinish = () => old.remove();
-        fresh.animate([{ transform: `translateY(${off * 80}%)`, opacity: 0 }, { transform: 'translateY(0)', opacity: 1 }], opt);
-      } else old.remove();
-    }
-    slot.cur = fresh; slot.ch = c.ch; slot.cls = c.cls;
-  }
-}
-
-// ============================================================================
-// Small controls
-// ============================================================================
-
-function segmented(options, value, onChange) {
-  const thumb = h('span.seg-thumb');
-  const el = h('div.seg', { role: 'group' }, thumb);
-  thumb.style.width = `calc((100% - 4px) / ${options.length})`;
-  let cur = value;
-  const btns = options.map(([v, label]) => h('button', {
-    type: 'button', text: label,
-    onclick: () => { if (cur === v) return; set(v); haptic(5); onChange(v); },
-  }));
-  el.append(...btns);
-  function set(v) {
-    cur = v;
-    const i = options.findIndex(o => o[0] === v);
-    thumb.style.transform = `translateX(${i * 100}%)`;
-    btns.forEach((b, j) => b.setAttribute('aria-pressed', String(j === i)));
-  }
-  set(value);
-  return { el, set };
-}
-
-function setPill(el, ratio, abs, label) {
-  const up = ratio > 0.00005, down = ratio < -0.00005;
-  el.className = 'pill ' + (up ? 'up' : down ? 'down' : '');
-  el.innerHTML = (up ? ICONS.up : down ? ICONS.down : '');
-  if (abs != null) el.append(h('span', { text: F.money(Math.abs(abs), ccy()) }));
-  el.append(h('span', { text: F.pct(ratio, { sign: false }) }));
-  if (label) el.append(h('span.dim', { text: label }));
-}
-
-// ============================================================================
 // Home
 // ============================================================================
 
 const roller = new Roller($('roller'));
-const rowMap = new Map();   // holding id -> row refs
-const segMap = new Map();   // kind -> allocation segment
-const chipMap = new Map();  // kind -> legend chip
-let filter = null;          // show only one class when set
-let pillMode = 'day';       // 'day' | 'total'
-let lastTotal = null;
+const rowMap = new Map();    // holding id -> row refs
+const segMap = new Map();    // kind -> allocation segment
+const tsegMap = new Map();   // kind -> target segment
+const chipMap = new Map();   // kind -> legend chip
+let filter = null;           // show only one class when set
+let pillMode = 'range';      // 'range' (follows the chart) | 'total' (vs cost)
+let lastShown = null, lastShownMode = '';
 let openRow = null;
 let firstPaint = true;
-const ACT = 148;            // width of the two swipe actions
+let ctx = null;              // what the last render computed: { v, u, info }
+let homeScrub = null;        // { t, v, first } while a finger is on the chart
+let chartSig = '', chartInfo = null;
+const ACT = 148;             // width of the two swipe actions
+
+const homeChart = createChart($('pchart'), { deferred: true, onScrub: s => { homeScrub = s; if (ctx) paintHero(ctx); } });
+const rangeSeg = segmented([['1D', '1D'], ['1S', '1S'], ['1M', '1M'], ['1A', '1A'], ['real', 'Real']], state.settings.range, r => setSetting('range', r));
+$('prange').append(rangeSeg.el);
+
+/** The chart's series, rebuilt only when something it depends on changed. */
+function chartSeries(v, u) {
+  const range = state.settings.range;
+  const sig = [
+    range, u ? u.id : 'ccy', ccy(), H.historyVersion(), snapshots().length,
+    state.holdings.map(a => `${a.id}:${a.qty}:${P.quoteOf(a) ? 1 : 0}`).join(','),
+  ].join('|');
+  if (sig === chartSig) return { info: chartInfo, fresh: false };
+  chartSig = sig;
+  const now = Date.now();
+  const unit = u ? { asset: u.asset, usd: u.usd } : null;
+  chartInfo = range === 'real'
+    ? realSeries({ snaps: snapshots(), now, liveUsd: v.totalUsd, rate: v.rate, unit, peek: H.peek })
+    : marketSeries({ range, span: H.RANGES[range].span, now, holdings: state.holdings, quoteOf: P.quoteOf, peek: H.peek, rate: v.rate, unit });
+  return { info: chartInfo, fresh: true };
+}
+
+/** What the pill under the balance says, or null to hide it. */
+function pillData({ v, u, info }) {
+  const range = state.settings.range;
+  if (homeScrub && info) {
+    const span = info.pts[info.pts.length - 1][0] - info.pts[0][0];
+    return { ratio: homeScrub.v / homeScrub.first - 1, abs: null, label: F.timeLabel(homeScrub.t, range === 'real' ? rangeForSpan(span) : range) };
+  }
+  if (pillMode === 'total' && v.gain) return { ratio: v.gain.pct, abs: v.gain.abs, label: 'total' };
+  if (range !== '1D' && info && info.moved) {
+    const first = info.pts[0][1], last = info.pts[info.pts.length - 1][1];
+    if (first > 0) {
+      return { ratio: last / first - 1, abs: info.inUnit ? null : last - first, label: range === 'real' ? `desde ${F.dateLabel(info.pts[0][0])}` : RANGE_LABEL[range] };
+    }
+  }
+  if (!v.day) return null;
+  if (u && u.prev) {
+    // Today's change measured in the unit: the unit's own move is taken out.
+    const prevUsd = v.totalUsd - v.day.abs / v.rate;
+    if (prevUsd > 0) return { ratio: (v.totalUsd / u.usd) / (prevUsd / u.prev) - 1, abs: null, label: 'hoy' };
+  }
+  return { ratio: v.day.pct, abs: v.day.abs, label: 'hoy' };
+}
+
+/** Balance, pill and glow. Cheap enough to run on every scrub move. */
+function paintHero(c) {
+  const { v, u, info } = c;
+  const has = state.holdings.length > 0, hidden = state.settings.hidden;
+  const scrubbing = !!(homeScrub && info);
+  const asUnit = scrubbing ? info.inUnit : !!u;
+  const value = !has ? 0 : scrubbing ? homeScrub.v : asUnit ? v.totalUsd / u.usd : v.total;
+
+  const parts = hidden ? [{ type: 'integer', value: '•••••' }] : asUnit ? F.unitParts(value, u.id) : F.moneyParts(value, ccy());
+  const len = parts.reduce((n, p) => n + p.value.length, 0);
+  $('balance').dataset.size = len <= 9 ? 'l' : len <= 11 ? 'm' : len <= 13 ? 's' : 'xs';
+  const mode = hidden ? 'hidden' : asUnit ? u.id : ccy();
+  const dir = scrubbing || lastShown == null || mode !== lastShownMode ? 0 : Math.sign(value - lastShown);
+  roller.set(parts, dir);
+  lastShown = value; lastShownMode = mode;
+  if (!scrubbing) $('nav-title').textContent = hidden ? 'Portfolio' : asUnit ? F.unitText(value, u.id) : F.money(value, ccy());
+
+  const pill = $('change');
+  if (pillMode === 'total' && !v.gain) pillMode = 'range';
+  const m = has ? pillData(c) : null;
+  pill.hidden = !m;
+  if (m) setPill(pill, m.ratio, hidden ? null : m.abs, m.label);
+  pill.dataset.toggle = v.gain ? '1' : '';
+  $('page').dataset.trend = !m || hidden ? '' : m.ratio > 0.00005 ? 'up' : m.ratio < -0.00005 ? 'down' : '';
+}
+
+function renderChart(c) {
+  const has = state.holdings.length > 0;
+  $('home-chart').hidden = !has;
+  if (!has) { c.info = null; return; }
+  const { info, fresh } = chartSeries(c.v, c.u);
+  c.info = info;
+  $('pchart').classList.toggle('empty', !info);
+  $('chart-empty').hidden = !!info;
+  if (info) {
+    if (fresh) homeChart.setData(info.pts);
+    else if (!homeScrub) homeChart.tick(info.inUnit ? c.v.totalUsd / c.u.usd : c.v.total);
+  }
+  const note = $('chart-note');
+  const missing = info ? info.missing : [];
+  note.hidden = missing.length === 0;
+  if (missing.length) {
+    const names = missing.length > 3 ? `${missing.slice(0, 2).join(', ')} y ${missing.length - 2} más` : missing.join(', ');
+    const needsKey = state.holdings.some(a => H.availability(a) === 'needs-key');
+    note.textContent = `Sin histórico: ${names}`;
+    note.dataset.action = needsKey ? '1' : '';
+  }
+}
 
 function renderHome() {
   const v = valuation();
+  const u = unitNow();
   const has = state.holdings.length > 0;
   const hidden = state.settings.hidden;
+  ctx = { v, u, info: null };
 
-  // --- balance
-  const parts = hidden ? [{ type: 'integer', value: '•••••' }] : F.moneyParts(has ? v.total : 0, ccy());
-  const len = parts.reduce((n, p) => n + p.value.length, 0);
-  $('balance').dataset.size = len <= 9 ? 'l' : len <= 11 ? 'm' : len <= 13 ? 's' : 'xs';
-  roller.set(parts, lastTotal == null || hidden ? 0 : Math.sign(v.total - lastTotal));
-  lastTotal = v.total;
-  $('nav-title').textContent = hidden ? 'Portfolio' : F.money(v.total, ccy());
   $('hero').hidden = !has;
-
-  // --- change pill
-  const pill = $('change');
-  if (pillMode === 'total' && !v.gain) pillMode = 'day';
-  const m = pillMode === 'total' ? v.gain : v.day;
-  pill.hidden = !has || !m;
-  if (m) setPill(pill, m.pct, hidden ? null : m.abs, pillMode === 'total' ? 'total' : 'hoy');
-  pill.dataset.toggle = v.gain && v.day ? '1' : '';
-
+  renderChart(ctx);
+  paintHero(ctx);
   renderAlloc(v);
   renderNotice();
   renderList(v);
@@ -190,41 +213,66 @@ function renderHome() {
   const st = P.status();
   $('live').classList.toggle('on', st === 'live');
   $('live').title = { live: 'En vivo', stale: 'Reconectando', loading: 'Conectando', offline: 'Sin conexión' }[st];
+
+  // The real history: one record of the balance every half hour the app is open.
+  if (has && !isDemo() && !v.loading && recordSnapshot(v.totalUsd)) scheduleBackup(4000);
+
+  if (firstPaint) hideSplash();
   firstPaint = false;
 }
 
 function renderAlloc(v) {
-  const bar = $('alloc-bar'), legend = $('alloc-legend');
+  const bar = $('alloc-bar'), tbar = $('alloc-target'), legend = $('alloc-legend');
+  const t = targets();
+  const rows = plan(v.kinds, v.total, t).filter(x => x.value > 0 || (x.target || 0) > 0);
+  rows.sort((x, y) => y.value - x.value || (y.target || 0) - (x.target || 0));
   $('alloc').hidden = v.kinds.length === 0;
   if (filter && !v.kinds.some(k => k[0] === filter)) filter = null;
+
   const live = new Set();
-  v.kinds.forEach(([kind, value], i) => {
+  rows.forEach((x, i) => {
+    const kind = x.kind;
     live.add(kind);
-    const share = value / v.total;
+
     let seg = segMap.get(kind);
-    if (!seg) {
-      seg = h('div.alloc-seg', { style: { background: KINDS[kind].color } });
-      bar.append(seg);
-      segMap.set(kind, seg);
-    }
-    seg.style.order = i;
-    seg.style.flex = `${Math.max(share, 0.004)} 1 0px`;
-    seg.classList.toggle('on', filter === kind);
+    if (x.value > 0) {
+      if (!seg) { seg = h('div.alloc-seg', { style: { background: KINDS[kind].color } }); bar.append(seg); segMap.set(kind, seg); }
+      seg.style.order = i;
+      seg.style.flex = `${Math.max(x.share, 0.004)} 1 0px`;
+      seg.classList.toggle('on', filter === kind);
+    } else if (seg) { seg.remove(); segMap.delete(kind); }
+
+    let tseg = tsegMap.get(kind);
+    if (t && x.target > 0) {
+      if (!tseg) { tseg = h('div.alloc-seg', { style: { background: KINDS[kind].color } }); tbar.append(tseg); tsegMap.set(kind, tseg); }
+      tseg.style.order = i;
+      tseg.style.flex = `${x.target} 1 0px`;
+    } else if (tseg) { tseg.remove(); tsegMap.delete(kind); }
 
     let chip = chipMap.get(kind);
     if (!chip) {
       chip = h('button.chip', { type: 'button', onclick: () => { filter = filter === kind ? null : kind; haptic(5); renderHome(); } },
-        h('i', { style: { background: KINDS[kind].color } }), h('span', { text: KINDS[kind].label }), h('b'));
+        h('i', { style: { background: KINDS[kind].color } }), h('span', { text: KINDS[kind].label }), h('b'), h('em'));
       legend.append(chip);
       chipMap.set(kind, chip);
     }
     chip.style.order = i;
-    chip.lastChild.textContent = F.share(share);
+    chip.children[2].textContent = F.share(x.share);
+    // How far this class is from its target, in percentage points.
+    const pts = x.drift == null ? 0 : Math.round(x.drift * 100);
+    chip.children[3].textContent = pts ? (pts > 0 ? `+${pts}` : `−${-pts}`) : '';
     chip.classList.toggle('on', filter === kind);
     chip.setAttribute('aria-pressed', String(filter === kind));
   });
-  for (const [kind, seg] of segMap) if (!live.has(kind)) { seg.remove(); segMap.delete(kind); chipMap.get(kind).remove(); chipMap.delete(kind); }
+  for (const [kind, chip] of chipMap) {
+    if (live.has(kind)) continue;
+    chip.remove(); chipMap.delete(kind);
+    const seg = segMap.get(kind); if (seg) { seg.remove(); segMap.delete(kind); }
+    const tseg = tsegMap.get(kind); if (tseg) { tseg.remove(); tsegMap.delete(kind); }
+  }
+  tbar.hidden = !t;
   bar.classList.toggle('filtered', !!filter);
+  $('btn-targets').classList.toggle('set', !!t);
 }
 
 function renderNotice() {
@@ -255,12 +303,13 @@ function closeOpenRow(except) {
 
 function createRow(a) {
   const name = h('div.row-name'), sub = h('div.row-sub'), val = h('div.row-val'), chg = h('div.row-chg');
+  const spark = sparkEl();
   const main = h('div.row-main', { role: 'button', tabIndex: 0 },
-    logo(a), h('div.row-mid', null, name, sub), h('div.row-end', null, val, chg));
+    logo(a), h('div.row-mid', null, name, sub), spark, h('div.row-end', null, val, chg));
   const edit = h('button.act.edit', { type: 'button', tabIndex: -1, 'aria-label': 'Editar', html: ICONS.pencil });
   const del = h('button.act.del', { type: 'button', tabIndex: -1, 'aria-label': 'Eliminar', html: ICONS.trash });
   const el = h('div.row', null, h('div.row-actions', null, edit, del), main);
-  const row = { id: a.id, el, main, name, sub, val, chg, x: 0, base: 0, w: 0, full: false, anim: null, value: null };
+  const row = { id: a.id, el, main, name, sub, val, chg, spark, sparkSrc: null, x: 0, base: 0, w: 0, full: false, anim: null };
 
   const open = () => {
     if (row.x < -4) { slideRow(row, 0); openRow = null; return; }
@@ -308,6 +357,7 @@ function renderList(v) {
   }
 
   const order = [];
+  let longest = 0;
   for (const r of rows) {
     const a = r.a;
     let row = rowMap.get(a.id);
@@ -316,7 +366,7 @@ function renderList(v) {
     row.name.textContent = a.name;
     row.sub.textContent = qtyLabel(a);
     row.val.textContent = r.value != null ? F.money(r.value, ccy()) : '—';
-    row.value = r.value;
+    longest = Math.max(longest, row.val.textContent.length);
 
     // Second line on the right: change (today or vs cost), else the unit price.
     const ratio = pillMode === 'total' ? r.gainPct : r.dayPct;
@@ -326,10 +376,20 @@ function renderList(v) {
     } else {
       row.chg.className = 'row-chg';
       if (a.kind === 'custom' || (a.kind === 'cash' && a.sym === ccy())) row.chg.textContent = '';
-      else row.chg.textContent = r.q ? F.price(r.q.p * P.rate(ccy()), ccy()) : a.kind === 'stock' ? 'Sin precio' : 'Cargando';
+      else row.chg.textContent = r.q ? F.price(r.q.p * v.rate, ccy()) : a.kind === 'stock' ? 'Sin precio' : 'Cargando';
+    }
+
+    // Seven-day trend, redrawn only when its data changes.
+    const week = H.peek(a, '1S');
+    const src = week ? week.pts : null;
+    if (src !== row.sparkSrc) {
+      row.sparkSrc = src;
+      if (src) drawSpark(row.spark, src, 7 * 86400e3); else row.spark.classList.remove('on');
     }
     order.push({ row, isNew });
   }
+  // Long amounts leave no room for the trend line on a phone.
+  list.classList.toggle('no-spark', longest > 11 && list.clientWidth < 440);
 
   const current = [...list.children];
   const same = current.length === order.length && order.every((o, i) => current[i] === o.row.el);
@@ -370,6 +430,13 @@ function scheduleRender(now) {
   if (renderTimer) return;
   const wait = Math.max(0, 900 - (performance.now() - lastRender));
   renderTimer = setTimeout(() => { renderTimer = 0; lastRender = performance.now(); renderHome(); }, wait);
+}
+
+function hideSplash() {
+  const s = $('splash');
+  if (!s) return;
+  s.classList.add('gone');
+  setTimeout(() => s.remove(), 500);
 }
 
 // ============================================================================
@@ -554,13 +621,11 @@ function amountView(sheet, asset, { edit = false } = {}) {
 // Detail
 // ============================================================================
 
-const meter = document.createElement('canvas').getContext('2d');
-const RANGE_LABEL = { '1D': '24 h', '1S': '7 días', '1M': '30 días', '1A': '1 año' };
-
 function openDetail(id, { edit = false } = {}) {
   const a0 = getHolding(id);
   if (!a0) return;
   let range = '1D', chart = null, scrub = null, loadSeq = 0, sheet = null;
+  const avail = H.availability(a0);
 
   const big = h('div.big');
   const pill = h('span.pill');
@@ -569,8 +634,14 @@ function openDetail(id, { edit = false } = {}) {
   const vQty = fv(), vVal = fv(), vCost = fv(), vGain = fv(), vShare = fv();
   vVal.classList.add('strong');
   const nameEl = h('div.detail-name'), symEl = h('div.detail-sym');
-  const chartHost = P.hasHistory(a0) ? h('div', { 'data-nodrag': '' }) : null;
-  const seg = segmented(Object.keys(P.RANGES).map(k => [k, k]), range, k => { range = k; load(); });
+  const chartHost = avail === 'yes' ? h('div', { 'data-nodrag': '' }) : null;
+  const seg = segmented(Object.keys(H.RANGES).map(k => [k, k]), range, k => { range = k; load(); });
+  const approx = h('p.hint', { hidden: true });
+  const needKey = avail === 'needs-key' && h('div.notice', null,
+    h('span', { text: 'El gráfico necesita tu llave de Twelve Data' }),
+    h('button', { type: 'button', text: 'Añadir', onclick: () => openSettings() }));
+  const statsGroup = h('div.group', { hidden: true });
+  const fieldRow = (label, value) => h('div.field', null, h('span.field-label', { text: label }), value);
 
   function paint() {
     const a = getHolding(id);
@@ -610,29 +681,42 @@ function openDetail(id, { edit = false } = {}) {
   async function load() {
     if (!chart) return;
     const my = ++loadSeq;
+    const a = getHolding(id) || a0;
     chart.setData(null);
-    const pts = await P.history(getHolding(id) || a0, range);
-    if (my !== loadSeq) return;
-    if (!pts) {
+    const got = await H.load(a, range);
+    if (my !== loadSeq || !chart) return;
+    if (!got) {
       // No history for this asset after all: drop the chart rather than show an empty box.
       if (range === '1D') { chart.destroy(); chart = null; chartHost.hidden = true; seg.el.hidden = true; }
       paint();
       return;
     }
-    chart.setData(pts);
+    chart.setData(H.windowed(a, got.pts, range));
+    approx.hidden = !got.approx;
+    if (got.approx) approx.textContent = `Histórico aproximado a partir del ETF ${H.proxyOf(a)}.`;
     paint();
   }
 
-  const row = (label, value) => h('div.field', null, h('span.field-label', { text: label }), value);
+  async function stats() {
+    const a = getHolding(id) || a0;
+    if (a.kind === 'cash' || a.kind === 'custom') return;
+    const q = P.quoteOf(a);
+    const rows = await loadStats(a, { price: q && q.p, rate: P.rate(ccy()), ccy: ccy(), finnhubKey: state.settings.finnhubKey, historyKey: state.settings.historyKey });
+    if (!rows.length) return;
+    statsGroup.replaceChildren(...rows.map(x => fieldRow(x.label, h('span.field-value', { text: x.value }))));
+    statsGroup.hidden = false;
+  }
+
   const view = makeView({
     body: [
       h('div.detail-top', null, logo(a0), h('div', null, nameEl, symEl)),
       h('div.detail-price', null, big, h('div.detail-meta', null, pill, meta)),
-      chartHost, chartHost && seg.el,
+      chartHost, chartHost && seg.el, approx, needKey,
       h('div.group', null,
-        a0.kind !== 'custom' && row('Cantidad', vQty), row('Valor', vVal),
-        a0.kind !== 'cash' && row(a0.kind === 'custom' ? 'Costo' : 'Costo promedio', vCost),
-        a0.kind !== 'cash' && row('Ganancia', vGain), row('Peso', vShare)),
+        a0.kind !== 'custom' && fieldRow('Cantidad', vQty), fieldRow('Valor', vVal),
+        a0.kind !== 'cash' && fieldRow(a0.kind === 'custom' ? 'Costo' : 'Costo promedio', vCost),
+        a0.kind !== 'cash' && fieldRow('Ganancia', vGain), fieldRow('Peso', vShare)),
+      statsGroup,
       h('div.detail-actions', null,
         h('button.btn-secondary', { type: 'button', text: 'Editar', onclick: () => pushEdit() }),
         h('button.btn-text.danger', { type: 'button', text: 'Eliminar', onclick: () => { sheet.close(); setTimeout(() => deleteHolding(id), 280); } })),
@@ -649,11 +733,12 @@ function openDetail(id, { edit = false } = {}) {
 
   if (chartHost) chart = createChart(chartHost, { onScrub: s => { scrub = s; paint(); } });
   const offP = P.onPrices(paint), offS = subscribe(paint);
-  view.onRemove = () => { offP(); offS(); if (chart) chart.destroy(); };
+  view.onRemove = () => { offP(); offS(); if (chart) { chart.destroy(); chart = null; } };
   view.onShow = paint;
   sheet = openSheet(view);
   paint();
   load();
+  stats();
   if (edit) pushEdit();
 }
 
@@ -668,6 +753,35 @@ function fieldButton(label, { value, onclick, danger, chevron } = {}) {
     chevron && h('span.chev', { html: ICONS.chevron }));
 }
 
+/** A text field for an API key that is checked before it is saved. */
+function keyField({ id, placeholder, value, initial, test, save }) {
+  let timer = 0, seq = 0;
+  const input = h('input.field-input.left', { id, type: 'text', placeholder, autocomplete: 'off', autocapitalize: 'off', spellcheck: 'false', value, 'aria-label': placeholder });
+  const mark = h('span.field-suffix');
+  const show = s => {
+    mark.className = s === 'ok' ? 'check' : 'field-suffix';
+    mark.innerHTML = s === 'ok' ? ICONS.check : s === 'busy' ? '<span class="spinner spin" style="display:block;width:18px;height:18px"></span>' : '';
+    if (s === 'invalid') mark.textContent = 'No válida';
+    if (s === 'network') mark.textContent = 'Sin conexión';
+    mark.style.color = s === 'invalid' ? 'var(--down)' : '';
+  };
+  if (value) show(initial || 'ok');
+  input.addEventListener('input', () => {
+    clearTimeout(timer);
+    const key = input.value.trim();
+    const my = ++seq;
+    if (!key) { show(''); save(''); return; }
+    show('busy');
+    timer = setTimeout(async () => {
+      const res = await test(key);
+      if (my !== seq) return;
+      show(res);
+      if (res === 'ok') { haptic(10); save(key); }
+    }, 600);
+  });
+  return h('label.field', null, input, mark);
+}
+
 function currencyView(sheet) {
   const items = CASH.map(c => h('button.field', {
     type: 'button',
@@ -677,36 +791,49 @@ function currencyView(sheet) {
   return makeView({ title: 'Moneda', body: [h('div.group', null, items)] });
 }
 
-function openSettings() {
-  let sheet = null, keyTimer = 0, keySeq = 0, wipeArmed = 0;
-  const ccyValue = h('span', { text: ccy() });
-  const keyInput = h('input.field-input.left', {
-    id: 'set-key', type: 'text', placeholder: 'Llave de Finnhub', autocomplete: 'off', autocapitalize: 'off',
-    spellcheck: 'false', value: state.settings.finnhubKey, 'aria-label': 'Llave de Finnhub',
-  });
-  const keyState = h('span.field-suffix');
-  const setKeyState = s => {
-    keyState.className = s === 'ok' ? 'check' : 'field-suffix';
-    keyState.innerHTML = s === 'ok' ? ICONS.check : s === 'busy' ? '<span class="spinner spin" style="display:block;width:18px;height:18px"></span>' : '';
-    if (s === 'invalid') keyState.textContent = 'No válida';
-    if (s === 'network') keyState.textContent = 'Sin conexión';
-    keyState.style.color = s === 'invalid' ? 'var(--down)' : '';
-  };
-  if (state.settings.finnhubKey) setKeyState(P.stockState() === 'invalid' ? 'invalid' : 'ok');
+function applyCopy(data) {
+  replaceAll(data);
+  replaceSnapshots(data.snapshots || []);
+}
 
-  keyInput.addEventListener('input', () => {
-    clearTimeout(keyTimer);
-    const key = keyInput.value.trim();
-    const my = ++keySeq;
-    if (!key) { setKeyState(''); setSetting('finnhubKey', ''); return; }
-    setKeyState('busy');
-    keyTimer = setTimeout(async () => {
-      const res = await P.testFinnhubKey(key);
-      if (my !== keySeq) return;
-      setKeyState(res);
-      if (res === 'ok') { haptic(10); setSetting('finnhubKey', key); }
-    }, 600);
+/** Lists the copies kept on the serving machine; two taps restore one. */
+function restoreView(sheet) {
+  const group = h('div.group');
+  const note = h('p.hint', { text: 'Buscando copias…' });
+  const view = makeView({ title: 'Restaurar copia', body: [group, note] });
+  const mine = device().id;
+  listBackups().then(list => {
+    note.textContent = list.length ? 'Restaurar reemplaza las posiciones de este dispositivo.' : 'Todavía no hay ninguna copia.';
+    group.replaceChildren(...list.map(b => {
+      const value = h('span', { text: `${b.count} ${b.count === 1 ? 'activo' : 'activos'} · ${F.ago(Date.parse(b.updated))}` });
+      let armed = 0;
+      return h('button.field', {
+        type: 'button',
+        onclick: async () => {
+          if (Date.now() - armed > 3500) {
+            armed = Date.now();
+            const old = value.textContent;
+            value.textContent = 'Toca otra vez para restaurar';
+            setTimeout(() => { if (Date.now() - armed >= 3400) value.textContent = old; }, 3500);
+            return;
+          }
+          const data = await fetchBackup(b.id);
+          if (!data) { toast('No se pudo leer esa copia'); return; }
+          applyCopy(data);
+          haptic(10);
+          sheet.close();
+          toast('Copia restaurada');
+        },
+      }, h('span.field-label', { text: b.id === mine ? `${b.label} · este` : b.label }), h('span.field-value', null, value));
+    }));
   });
+  return view;
+}
+
+function openSettings() {
+  let sheet = null, wipeArmed = 0;
+  const ccyValue = h('span', { text: ccy() });
+  const hide = toggle(state.settings.hidden, on => setSetting('hidden', on), 'Ocultar importes');
 
   const fileInput = h('input', { type: 'file', accept: 'application/json,.json', hidden: true, id: 'set-import' });
   fileInput.addEventListener('change', async () => {
@@ -715,7 +842,7 @@ function openSettings() {
     try {
       const data = JSON.parse(await file.text());
       if (!Array.isArray(data.holdings)) throw new Error('shape');
-      replaceAll(data);
+      applyCopy(data);
       sheet.close();
       toast('Portfolio importado');
     } catch { toast('Ese archivo no es una copia de Portfolio'); }
@@ -723,7 +850,7 @@ function openSettings() {
   });
 
   const doExport = () => {
-    const url = URL.createObjectURL(new Blob([exportData()], { type: 'application/json' }));
+    const url = URL.createObjectURL(new Blob([exportData({ snapshots: snapshots() })], { type: 'application/json' }));
     const link = h('a', { href: url, download: `portfolio-${new Date().toISOString().slice(0, 10)}.json` });
     document.body.append(link);
     link.click();
@@ -733,26 +860,54 @@ function openSettings() {
 
   const wipe = h('button.field.danger', { type: 'button' }, h('span.field-label', { text: 'Borrar todo' }));
   wipe.addEventListener('click', () => {
-    if (Date.now() - wipeArmed < 3500) { replaceAll({ holdings: [] }); sheet.close(); toast('Portfolio borrado'); return; }
+    if (Date.now() - wipeArmed < 3500) { replaceAll({ holdings: [] }); replaceSnapshots([]); sheet.close(); toast('Portfolio borrado'); return; }
     wipeArmed = Date.now();
     wipe.firstChild.textContent = 'Toca otra vez para borrar';
     setTimeout(() => { wipe.firstChild.textContent = 'Borrar todo'; }, 3500);
   });
 
+  // Copies on the serving machine: only shown where that server exists.
+  const copyValue = h('span');
+  const copyTitle = h('div.group-title', { text: 'Copia automática' });
+  const copyGroup = h('div.group', null,
+    h('div.field', null, h('span.field-label', { text: 'Última copia' }), h('span.field-value', null, copyValue)),
+    fieldButton('Restaurar una copia', { chevron: true, onclick: () => sheet.push(restoreView(sheet)) }));
+  const paintCopy = () => {
+    const b = backupStatus();
+    copyTitle.hidden = copyGroup.hidden = !b.enabled;
+    copyValue.textContent = isDemo() ? 'En pausa (ejemplo)' : b.lastPush ? F.ago(b.lastPush) : 'Pendiente';
+  };
+  paintCopy();
+  const offCopy = onBackup(paintCopy);
+
   const view = makeView({
     title: 'Ajustes',
     body: [
-      h('div.group', null, fieldButton('Moneda', { value: ccyValue, chevron: true, onclick: () => sheet.push(currencyView(sheet)) })),
+      h('div.group', null,
+        fieldButton('Moneda', { value: ccyValue, chevron: true, onclick: () => sheet.push(currencyView(sheet)) }),
+        h('div.field', null, h('span.field-label', { text: 'Ocultar importes' }), h('span.field-value'), hide.el)),
       h('div.group-title', { text: 'Acciones en vivo' }),
-      h('div.group', null, h('label.field', null, keyInput, keyState)),
+      h('div.group', null, keyField({
+        id: 'set-key', placeholder: 'Llave de Finnhub', value: state.settings.finnhubKey,
+        initial: P.stockState() === 'invalid' ? 'invalid' : 'ok',
+        test: P.testFinnhubKey, save: key => setSetting('finnhubKey', key),
+      })),
       h('p.hint', { html: 'Llave gratuita en <a href="https://finnhub.io/register" target="_blank" rel="noopener">finnhub.io</a>. Da precio en tiempo real de acciones y ETFs de EE. UU.' }),
+      h('div.group-title', { text: 'Gráficos de acciones y oro' }),
+      h('div.group', null, keyField({
+        id: 'set-history-key', placeholder: 'Llave de Twelve Data', value: state.settings.historyKey,
+        test: H.testHistoryKey, save: key => setSetting('historyKey', key),
+      })),
+      h('p.hint', { html: 'Llave gratuita en <a href="https://twelvedata.com/pricing" target="_blank" rel="noopener">twelvedata.com</a>. Da el histórico de acciones, ETFs y oro. Plata, platino y paladio se aproximan con un ETF.' }),
+      copyTitle, copyGroup,
       h('div.group-title', { text: 'Datos' }),
       h('div.group', null, fieldButton('Exportar copia', { onclick: doExport }), fieldButton('Importar copia', { onclick: () => fileInput.click() }), wipe),
       fileInput,
-      h('p.hint', { text: 'Tus posiciones se guardan solo en este dispositivo. Precios de Coinbase, CoinGecko, gold-api.com, Finnhub y open.er-api.com.' }),
+      h('p.hint', { text: 'Tus posiciones se guardan en este dispositivo. Precios de Coinbase, CoinGecko, gold-api.com, Finnhub, Twelve Data y open.er-api.com.' }),
     ],
   });
-  view.onShow = () => { ccyValue.textContent = ccy(); };
+  view.onShow = () => { ccyValue.textContent = ccy(); hide.set(state.settings.hidden); };
+  view.onRemove = offCopy;
   sheet = openSheet(view);
 }
 
@@ -784,7 +939,10 @@ function demoHoldings() {
 
 function sync() {
   P.setFinnhubKey(state.settings.finnhubKey);
-  P.track(state.holdings);
+  H.setHistoryKey(state.settings.historyKey);
+  const held = new Set(state.holdings.map(a => a.id));
+  P.track([...state.holdings, ...[BTC, XAU].filter(a => !held.has(a.id))]);
+  rangeSeg.set(state.settings.range);
 }
 
 $('btn-settings').innerHTML = ICONS.gear;
@@ -793,15 +951,37 @@ $('btn-settings').addEventListener('click', () => openSettings());
 $('btn-add').addEventListener('click', () => openAdd());
 $('empty-add').addEventListener('click', () => openAdd());
 $('empty-demo').addEventListener('click', () => { haptic(8); enterDemo(demoHoldings()); });
+$('empty-restore').addEventListener('click', () => { const s = openSheet(restoreView({ close: () => s.close() })); });
 $('demo-exit').addEventListener('click', () => exitDemo());
-$('balance').addEventListener('click', () => { haptic(6); setSetting('hidden', !state.settings.hidden); });
+$('btn-targets').addEventListener('click', () => openTargets(valuation));
+$('chart-note').addEventListener('click', () => { if ($('chart-note').dataset.action) openSettings(); });
 $('change').addEventListener('click', () => {
   if (!$('change').dataset.toggle) return;
-  pillMode = pillMode === 'day' ? 'total' : 'day';
+  pillMode = pillMode === 'total' ? 'range' : 'total';
   haptic(5);
   scheduleRender(true);
 });
 $('empty-logos').append(logo(CRYPTO[0]), logo(METALS[0]), logo(STOCKS[0]), logo(CASH[0]));
+
+// Balance: a tap changes the unit (currency → bitcoin → gold), a long press hides it.
+{
+  const bal = $('balance');
+  let hold = 0, held = false;
+  bal.addEventListener('pointerdown', () => {
+    held = false;
+    clearTimeout(hold);
+    hold = setTimeout(() => { held = true; haptic(14); setSetting('hidden', !state.settings.hidden); }, 480);
+  });
+  for (const ev of ['pointerup', 'pointerleave', 'pointercancel']) bal.addEventListener(ev, () => clearTimeout(hold));
+  bal.addEventListener('contextmenu', e => e.preventDefault());
+  bal.addEventListener('click', () => {
+    if (held) { held = false; return; }
+    haptic(6);
+    if (state.settings.hidden) { setSetting('hidden', false); return; }
+    const i = UNIT_CYCLE.indexOf(state.settings.unit);
+    setSetting('unit', UNIT_CYCLE[(i + 1) % UNIT_CYCLE.length]);
+  });
+}
 
 // Compact bar + pull to refresh (iOS reports a negative scrollTop while bouncing).
 const scroller = $('scroll'), nav = $('nav'), ptr = $('ptr');
@@ -832,13 +1012,25 @@ scroller.addEventListener('touchend', async () => {
 // iOS only applies :active styles when a touch listener exists.
 document.addEventListener('touchstart', () => {}, { passive: true });
 
-subscribe(() => { sync(); scheduleRender(true); });
+P.setPrevProvider(a => H.ref24(a));
+subscribe(() => { sync(); scheduleRender(true); scheduleBackup(); });
 P.onPrices(() => scheduleRender(false));
+H.onHistory(() => scheduleRender(false));
 
 if (location.hash === '#demo' && !state.holdings.length) enterDemo(demoHoldings());
 sync();
 P.start();
 renderHome();
+
+// Copies on the serving machine, where that exists. An empty app is offered a restore.
+initBackup({
+  getDoc: () => exportObject({ snapshots: snapshots() }),
+  canPush: () => !isDemo() && state.holdings.length > 0,
+}).then(async on => {
+  if (!on || state.holdings.length) return;
+  const list = await listBackups();
+  $('empty-restore').hidden = !list.some(b => b.count > 0);
+});
 
 if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost' || location.hostname === '127.0.0.1')) {
   navigator.serviceWorker.register('sw.js').catch(() => { /* the app works without it */ });

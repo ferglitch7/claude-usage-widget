@@ -7,7 +7,12 @@ const KEY = 'portfolio.v1';
 
 const defaults = () => ({
   holdings: [],
-  settings: { ccy: 'USD', finnhubKey: '', hidden: false },
+  settings: {
+    ccy: 'USD', finnhubKey: '', historyKey: '', hidden: false,
+    unit: 'ccy',     // balance shown in the currency, 'btc' or 'xau'
+    range: '1D',     // chart range on the home screen
+    targets: null,   // { crypto: 60, cash: 20, … } percentages adding up to 100
+  },
 });
 
 function read() {
@@ -115,7 +120,13 @@ export function replaceAll(data) {
   commit('holdings');
 }
 
-export function exportData() {
+/** What a copy contains: positions and preferences, never API keys. */
+export function exportObject(extra = {}) {
   const holdings = demo ? savedHoldings : state.holdings;
-  return JSON.stringify({ app: 'portfolio', version: 1, exported: new Date().toISOString(), holdings, settings: { ccy: state.settings.ccy } }, null, 2);
+  const { ccy, unit, targets } = state.settings;
+  return { app: 'portfolio', version: 1, exported: new Date().toISOString(), holdings, settings: { ccy, unit, targets }, ...extra };
+}
+
+export function exportData(extra) {
+  return JSON.stringify(exportObject(extra), null, 2);
 }

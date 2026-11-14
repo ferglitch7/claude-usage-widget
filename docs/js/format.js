@@ -77,6 +77,30 @@ export function price(v, ccy) {
   return moneyFormat(ccy, d).format(v);
 }
 
+/** Large amounts in short form: $1.37 B. */
+export function compactMoney(v, ccy) {
+  if (!Number.isFinite(v)) return '—';
+  return nf(`c:${ccy}`, { style: 'currency', currency: ccy, currencyDisplay: 'narrowSymbol', notation: 'compact', maximumFractionDigits: 2 }).format(v);
+}
+
+/**
+ * The balance counted in units of an asset instead of money: ₿0.7443 or
+ * 13.02 oz of gold. Same part types as moneyParts(), for the rolling number.
+ */
+export function unitParts(v, unit) {
+  if (!Number.isFinite(v)) return [{ type: 'integer', value: '—' }];
+  if (unit === 'btc') {
+    const d = v >= 100 ? 2 : v >= 1 ? 4 : 5;
+    return [{ type: 'currency', value: '₿' }, ...nf(`u:${d}`, { minimumFractionDigits: d, maximumFractionDigits: d, useGrouping: 'always' }).formatToParts(v)];
+  }
+  const d = v >= 1000 ? 0 : v >= 100 ? 1 : 2;
+  return [...nf(`u:${d}`, { minimumFractionDigits: d, maximumFractionDigits: d, useGrouping: 'always' }).formatToParts(v), { type: 'literal', value: ' oz' }];
+}
+
+export function unitText(v, unit) {
+  return unitParts(v, unit).map(p => p.value).join('');
+}
+
 export function signedMoney(v, ccy) {
   if (!Number.isFinite(v)) return '—';
   const s = money(Math.abs(v), ccy);
@@ -145,6 +169,19 @@ export function editable(v) {
   const s = String(Number(v.toFixed(8)));
   const dec = nf('dec', { minimumFractionDigits: 1 }).format(1.1).replace(/\d/g, '');
   return s.includes('e') ? v.toFixed(8).replace(/0+$/, '').replace('.', dec) : s.replace('.', dec);
+}
+
+export function dateLabel(ts) {
+  return new Date(ts).toLocaleDateString(LOCALE, { day: 'numeric', month: 'short' });
+}
+
+/** "hace 3 min", "hace 2 h", or a date for anything older than a day. */
+export function ago(ts) {
+  const m = Math.round((Date.now() - ts) / 60e3);
+  if (m < 1) return 'ahora';
+  if (m < 60) return `hace ${m} min`;
+  if (m < 24 * 60) return `hace ${Math.round(m / 60)} h`;
+  return dateLabel(ts);
 }
 
 export function timeLabel(ts, range) {

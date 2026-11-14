@@ -27,7 +27,12 @@ function resample(pts) {
   return out;
 }
 
-export function createChart(host, { onScrub } = {}) {
+/**
+ * onScrub(point | null) is called while a finger moves over the chart.
+ * deferred: wait for a sideways move or a short hold before scrubbing, so a
+ * chart inside a scrolling page does not flicker when the page is scrolled.
+ */
+export function createChart(host, { onScrub, deferred = false } = {}) {
   const id = `chart-${++uid}`;
   host.classList.add('chart');
   const svg = svgEl('svg', { class: 'chart-svg', preserveAspectRatio: 'none', 'aria-hidden': 'true' });
@@ -115,19 +120,37 @@ export function createChart(host, { onScrub } = {}) {
     paint();
     onScrub && onScrub(null);
   }
-  host.addEventListener('pointerdown', e => {
-    if (!data || reveal < 1) return;
+  let armed = null, holdTimer = 0; // a touch that has not become a scrub yet
+  function beginScrub(e) {
+    armed = null;
+    clearTimeout(holdTimer);
     scrubbing = true;
     host.classList.add('scrubbing');
     try { host.setPointerCapture(e.pointerId); } catch { /* not capturable */ }
     haptic(6);
     paint();
     scrubAt(e.clientX);
+  }
+  function release() {
+    armed = null;
+    clearTimeout(holdTimer);
+    endScrub();
+  }
+  host.addEventListener('pointerdown', e => {
+    if (!data || reveal < 1) return;
+    if (!deferred || e.pointerType === 'mouse') { beginScrub(e); return; }
+    armed = { x: e.clientX, y: e.clientY, e };
+    holdTimer = setTimeout(() => { if (armed) beginScrub(armed.e); }, 220);
   });
-  host.addEventListener('pointermove', e => { if (scrubbing) scrubAt(e.clientX); });
-  host.addEventListener('pointerup', endScrub);
-  host.addEventListener('pointercancel', endScrub);
-  host.addEventListener('lostpointercapture', endScrub);
+  host.addEventListener('pointermove', e => {
+    if (scrubbing) { scrubAt(e.clientX); return; }
+    if (armed && Math.abs(e.clientX - armed.x) > 6 && Math.abs(e.clientX - armed.x) > Math.abs(e.clientY - armed.y)) beginScrub(e);
+  });
+  host.addEventListener('pointerup', release);
+  host.addEventListener('pointercancel', release);
+  // Taking capture moves it away from the child under the finger, and that
+  // child's "lost capture" bubbles up here; only the host losing it ends the scrub.
+  host.addEventListener('lostpointercapture', e => { if (e.target === host) endScrub(); });
 
   return {
     /** pts: [[timestampMs, value], …] ascending, or null while loading. */

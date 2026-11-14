@@ -75,7 +75,7 @@ export function openSheet(root, { onClose } = {}) {
     const W = stack.clientWidth;
     top.el.style.transform = `translate3d(${p * W}px,0,0)`;
     prev.el.style.transform = `translate3d(${-(1 - p) * 0.28 * W}px,0,0)`;
-    prev.el.style.opacity = 0.25 + 0.75 * p;
+    prev.el.style.opacity = p; // views are see-through, so the one underneath fades out completely
   }
   function rest(v) { v.el.style.transform = ''; v.el.style.opacity = ''; }
 

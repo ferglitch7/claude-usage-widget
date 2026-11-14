@@ -44,7 +44,7 @@ export function tween(ms, onUpdate, onDone) {
   const t0 = performance.now();
   const frame = now => {
     if (done) return;
-    const k = Math.min(1, (now - t0) / ms);
+    const k = Math.min(1, Math.max(0, (now - t0) / ms)); // a frame can be stamped before t0
     onUpdate(1 - Math.pow(1 - k, 3));
     if (k < 1) raf = requestAnimationFrame(frame); else { done = true; onDone && onDone(); }
   };

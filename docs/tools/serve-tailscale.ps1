@@ -9,7 +9,13 @@
 # projects are left alone. Running it again updates the files and keeps the
 # same address.
 #
+# If Python is installed it also turns on automatic copies: a small local
+# server keeps each device's positions under %USERPROFILE%\portfolio-data and
+# starts with Windows (a shortcut in the Startup folder). Without Python the
+# app works the same, just without copies.
+#
 # Undo:  tailscale serve --https=<port> off     (the port is in portfolio\.serve-port)
+#        and delete "Portfolio backup.lnk" from the Startup folder (shell:startup)
 
 & {
   $ErrorActionPreference = 'Stop'
@@ -18,7 +24,9 @@
   $repo = 'ferglitch7/claude-usage-widget'
   $branch = 'claude/serene-davinci-syt3d3'
   $dest = Join-Path $HOME 'portfolio'
+  $dataDir = Join-Path $HOME 'portfolio-data'
   $portFile = Join-Path $dest '.serve-port'
+  $apiPort = 8765
 
   if (-not (Get-Command tailscale -ErrorAction SilentlyContinue)) {
     throw 'No encuentro "tailscale" en el PATH. Abre una terminal nueva o instala Tailscale.'
@@ -58,6 +66,61 @@
   if ($LASTEXITCODE -ne 0) { throw "tailscale serve termino con codigo $LASTEXITCODE." }
   Set-Content -Path $portFile -Value $port
 
+  # 4. Automatic copies (optional). Any failure here leaves the app itself working.
+  $copies = $false
+  try {
+    # A real Python 3: "py" (the launcher) or "python". The Store placeholder prints nothing useful.
+    $exe = $null; $pre = ''
+    $cmd = Get-Command py -ErrorAction SilentlyContinue
+    if ($cmd -and ((& py -3 -c "print(7)") -eq '7')) {
+      $w = Get-Command pyw -ErrorAction SilentlyContinue
+      $exe = if ($w) { $w.Source } else { $cmd.Source }
+      $pre = '-3 '
+    }
+    if (-not $exe) {
+      $cmd = Get-Command python -ErrorAction SilentlyContinue
+      if ($cmd -and ((& python -c "print(7)") -eq '7')) {
+        $w = Join-Path (Split-Path $cmd.Source) 'pythonw.exe'
+        $exe = if (Test-Path $w) { $w } else { $cmd.Source }
+      }
+    }
+    if (-not $exe) { throw 'no hay Python 3 instalado' }
+
+    New-Item -ItemType Directory -Path $dataDir -Force | Out-Null
+    $script = Join-Path $dataDir 'backup_server.py'
+    Copy-Item -Path (Join-Path $dest 'server\backup_server.py') -Destination $script -Force
+    $argLine = "$pre`"$script`" --port $apiPort --dir `"$dataDir`""
+
+    # Start with Windows: a shortcut in the user's Startup folder (no admin needed).
+    $lnk = Join-Path ([Environment]::GetFolderPath('Startup')) 'Portfolio backup.lnk'
+    $shell = New-Object -ComObject WScript.Shell
+    $sc = $shell.CreateShortcut($lnk)
+    $sc.TargetPath = $exe
+    $sc.Arguments = $argLine
+    $sc.WorkingDirectory = $dataDir
+    $sc.WindowStyle = 7
+    $sc.Save()
+
+    # Restart it now so an updated script takes effect.
+    Get-CimInstance Win32_Process -Filter "Name like 'py%'" |
+      Where-Object { $_.CommandLine -like '*backup_server.py*' } |
+      ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+    Start-Process -FilePath $exe -ArgumentList $argLine -WorkingDirectory $dataDir -WindowStyle Hidden
+
+    $up = $false
+    foreach ($i in 1..20) {
+      Start-Sleep -Milliseconds 300
+      try { if ((Invoke-RestMethod -Uri "http://127.0.0.1:$apiPort/health" -TimeoutSec 2).app -eq 'portfolio-backup') { $up = $true; break } } catch { }
+    }
+    if (-not $up) { throw "el servidor de copias no respondio en el puerto $apiPort" }
+
+    & tailscale serve --bg "--https=$port" --set-path=/api "http://127.0.0.1:$apiPort"
+    if ($LASTEXITCODE -ne 0) { throw "tailscale serve (api) termino con codigo $LASTEXITCODE" }
+    $copies = $true
+  } catch {
+    Write-Host "Copia automatica no activada: $($_.Exception.Message)" -ForegroundColor Yellow
+  }
+
   # The serve command above already printed the address; repeat it on one line.
   $name = $null
   try { $name = (& tailscale status --json | Out-String | ConvertFrom-Json).Self.DNSName } catch { }
@@ -67,4 +130,5 @@
   } else {
     Write-Host "Portfolio listo en el puerto $port. Direccion: tailscale serve status" -ForegroundColor Green
   }
+  if ($copies) { Write-Host "Copia automatica activa. Datos en $dataDir" -ForegroundColor Green }
 }

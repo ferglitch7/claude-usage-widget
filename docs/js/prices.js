@@ -119,8 +119,15 @@ export function quoteOf(a) {
   }
   const q = quotes.get(a.id);
   if (!q) return null;
-  return q.prev == null ? { ...q, prev: sampleRef(a.id) } : q;
+  if (q.prev != null) return q;
+  // No reference price from the live source: ask the history module first
+  // (exact, when it has data), then fall back to what this browser recorded.
+  return { ...q, prev: (prevProvider && prevProvider(a)) || sampleRef(a.id) };
 }
+
+let prevProvider = null;
+/** Lets another module supply "price about 24 h ago" for assets that lack one. */
+export function setPrevProvider(fn) { prevProvider = fn; }
 
 /** Units of the display currency per 1 USD (1 when the rate is unknown). */
 export function rate(ccy) { return fx.rates[ccy] || 1; }
@@ -371,61 +378,4 @@ if (typeof document !== 'undefined') {
   });
   window.addEventListener('online', () => { if (running) refresh(); touch('status'); });
   window.addEventListener('offline', () => touch('status'));
-}
-
-// ---------- History (charts) -------------------------------------------------
-
-export const RANGES = {
-  '1D': { gran: 300, span: 86400, days: 1 },
-  '1S': { gran: 3600, span: 7 * 86400, days: 7 },
-  '1M': { gran: 21600, span: 30 * 86400, days: 30 },
-  '1A': { gran: 86400, span: 365 * 86400, days: 365 },
-};
-
-/** Only crypto has a free history source; everything else has no chart. */
-export function hasHistory(a) { return a.kind === 'crypto' && !!(a.cb || a.cg); }
-
-const histCache = new Map();
-
-export async function history(a, range) {
-  if (!hasHistory(a)) return null;
-  const key = `${a.id}:${range}`;
-  const hit = histCache.get(key);
-  const ttl = range === '1D' ? 60e3 : 600e3;
-  if (hit && Date.now() - hit.t < ttl) return hit.pts;
-  const R = RANGES[range];
-  let pts = null;
-  try {
-    pts = a.cb ? await cbCandles(a.cb, R) : await cgChart(a.cg, R.days);
-  } catch { pts = null; }
-  if (pts && pts.length > 1) histCache.set(key, { t: Date.now(), pts });
-  return pts && pts.length > 1 ? pts : null;
-}
-
-async function cbCandles(product, { gran, span }) {
-  const end = Math.floor(Date.now() / 1000);
-  const startAll = end - span;
-  const step = gran * 300; // the API returns at most 300 candles per call
-  const jobs = [];
-  for (let s = startAll; s < end; s += step) {
-    const e = Math.min(end, s + step);
-    const url = `${CB_REST}/products/${product}/candles?granularity=${gran}&start=${new Date(s * 1000).toISOString()}&end=${new Date(e * 1000).toISOString()}`;
-    jobs.push(fetch(url).then(r => (r.ok ? r.json() : Promise.reject(new Error(String(r.status))))));
-  }
-  const rows = (await Promise.all(jobs)).flat();
-  const seen = new Set();
-  const pts = [];
-  for (const c of rows) {
-    if (seen.has(c[0])) continue;
-    seen.add(c[0]);
-    pts.push([c[0] * 1000, c[4]]);
-  }
-  return pts.sort((x, y) => x[0] - y[0]);
-}
-
-async function cgChart(id, days) {
-  const r = await fetch(`${CG}/coins/${encodeURIComponent(id)}/market_chart?vs_currency=usd&days=${days}`);
-  if (!r.ok) throw new Error(String(r.status));
-  const d = await r.json();
-  return (d.prices || []).filter(p => Number.isFinite(p[1]));
 }

@@ -1,11 +1,12 @@
 // Offline shell: the app's own files are cached so it opens without a
 // connection (showing the last known prices). Price and logo requests to other
 // hosts are never touched.
-const CACHE = 'portfolio-v1';
+const CACHE = 'portfolio-v2';
 const SHELL = [
   './', 'index.html', 'styles.css', 'manifest.webmanifest',
   'js/main.js', 'js/store.js', 'js/prices.js', 'js/format.js', 'js/catalog.js', 'js/catalog-data.js',
-  'js/motion.js', 'js/logo.js', 'js/chart.js', 'js/sheet.js',
+  'js/motion.js', 'js/logo.js', 'js/chart.js', 'js/sheet.js', 'js/ui.js', 'js/history.js', 'js/series.js',
+  'js/snapshots.js', 'js/targets.js', 'js/stats.js', 'js/backup.js',
   'icons/icon-192.png', 'icons/apple-touch-icon.png',
 ];
 
@@ -21,6 +22,7 @@ self.addEventListener('activate', e => {
 self.addEventListener('fetch', e => {
   const url = new URL(e.request.url);
   if (e.request.method !== 'GET' || url.origin !== location.origin) return;
+  if (url.pathname.includes('/api/')) return; // backup copies always go to the network
   e.respondWith(
     fetch(e.request).then(res => {
       if (res.ok) { const copy = res.clone(); caches.open(CACHE).then(c => c.put(e.request, copy)); }
