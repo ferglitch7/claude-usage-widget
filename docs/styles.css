@@ -79,6 +79,8 @@
 [hidden] { display: none !important; }
 
 html, body { height: 100%; }
+/* Home-screen app: paint the whole screen, under the status bar and the home indicator. */
+html { min-height: 100vh; min-height: 100lvh; background: var(--bg); }
 body {
   background: var(--bg);
   color: var(--label);
@@ -339,7 +341,7 @@ svg { display: block; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
 /* ---- sheets ---- */
-#sheets { position: absolute; left: 0; right: 0; top: 0; height: 100%; pointer-events: none; z-index: 20; }
+#sheets { position: absolute; left: 0; right: 0; top: 0; bottom: 0; pointer-events: none; z-index: 20; }
 .sheet-layer { position: absolute; inset: 0; pointer-events: auto; display: flex; align-items: flex-end; justify-content: center; }
 .sheet-layer.closing { pointer-events: none; }
 .sheet-backdrop { position: absolute; inset: 0; background: rgba(0, 0, 0, 0.42); opacity: 0; }

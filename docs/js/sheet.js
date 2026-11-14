@@ -176,13 +176,18 @@ export function openSheet(root, { onClose } = {}) {
 
 export function closeSheet() { if (current) current.close(); }
 
-// Keep sheets above the on-screen keyboard: the layer follows the visual viewport.
+// Keep sheets above the on-screen keyboard. The layer fills the screen and only
+// gives up the part the keyboard covers: in a home-screen app iOS reports a
+// visual viewport shorter than the screen even with no keyboard, so its height
+// cannot be used directly.
 if (typeof visualViewport !== 'undefined' && visualViewport) {
   const fit = () => {
     const layer = document.getElementById('sheets');
-    if (!layer) return;
-    layer.style.height = visualViewport.height + 'px';
-    layer.style.transform = `translateY(${visualViewport.offsetTop}px)`;
+    const app = document.getElementById('app');
+    if (!layer || !app) return;
+    const full = app.getBoundingClientRect().height;
+    const covered = full - (visualViewport.offsetTop + visualViewport.height);
+    layer.style.bottom = covered > 120 ? covered + 'px' : '0px';
   };
   visualViewport.addEventListener('resize', fit);
   visualViewport.addEventListener('scroll', fit);

@@ -41,6 +41,13 @@ El instalador también deja una tarea programada ("Portfolio update") que lo
 vuelve a ejecutar cada hora sin ventana: los cambios publicados en el repo
 llegan solos a la torre, y el iPhone los toma al abrir la app.
 
+### Publicar un cambio
+
+Sube el mismo número de versión en `version.json` y en `js/update.js`
+(`node --test` falla si no coinciden). La app instalada compara su versión con
+`version.json` cada vez que vuelve a primer plano y se recarga sola si hay una
+nueva; nunca con una hoja abierta.
+
 ## De dónde salen los datos
 
 | Clase | Precio en vivo | Histórico (gráficos) | Llave |

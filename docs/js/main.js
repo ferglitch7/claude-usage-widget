@@ -17,6 +17,7 @@ import { marketSeries, realSeries, rangeForSpan } from './series.js';
 import { snapshots, recordSnapshot, replaceSnapshots } from './snapshots.js';
 import { targets, plan, openTargets } from './targets.js';
 import { loadStats } from './stats.js';
+import { startUpdates } from './update.js';
 import { initBackup, scheduleBackup, backupStatus, fetchBackup, copyCode, onBackup } from './backup.js';
 
 const $ = id => document.getElementById(id);
@@ -1040,6 +1041,8 @@ initBackup({
   $('empty-restore').hidden = !on;
 });
 
+startUpdates();
+
 if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost' || location.hostname === '127.0.0.1')) {
-  navigator.serviceWorker.register('sw.js').catch(() => { /* the app works without it */ });
+  navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).catch(() => { /* the app works without it */ });
 }
