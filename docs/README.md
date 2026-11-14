@@ -37,6 +37,10 @@ arranca `server/backup_server.py` (solo librería estándar, escucha en
 127.0.0.1), lo monta en `/api` y lo deja iniciándose con Windows. Las copias
 quedan en `%USERPROFILE%\portfolio-data`.
 
+El instalador también deja una tarea programada ("Portfolio update") que lo
+vuelve a ejecutar cada hora sin ventana: los cambios publicados en el repo
+llegan solos a la torre, y el iPhone los toma al abrir la app.
+
 ## De dónde salen los datos
 
 | Clase | Precio en vivo | Histórico (gráficos) | Llave |

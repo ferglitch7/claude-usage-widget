@@ -14,8 +14,13 @@
 # starts with Windows (a shortcut in the Startup folder). Without Python the
 # app works the same, just without copies.
 #
+# It also schedules itself to run every hour, hidden, so new versions of the
+# app reach this machine on their own. Each run only downloads and copies files;
+# the backup server is restarted only when its script changed or it is down.
+#
 # Undo:  tailscale serve --https=<port> off     (the port is in portfolio\.serve-port)
-#        and delete "Portfolio backup.lnk" from the Startup folder (shell:startup)
+#        delete "Portfolio backup.lnk" from the Startup folder (shell:startup)
+#        schtasks /Delete /TN "Portfolio update" /F
 
 & {
   $ErrorActionPreference = 'Stop'
@@ -88,7 +93,9 @@
 
     New-Item -ItemType Directory -Path $dataDir -Force | Out-Null
     $script = Join-Path $dataDir 'backup_server.py'
-    Copy-Item -Path (Join-Path $dest 'server\backup_server.py') -Destination $script -Force
+    $newScript = Join-Path $dest 'server\backup_server.py'
+    $changed = -not (Test-Path $script) -or ((Get-FileHash $script).Hash -ne (Get-FileHash $newScript).Hash)
+    Copy-Item -Path $newScript -Destination $script -Force
     $argLine = "$pre`"$script`" --port $apiPort --dir `"$dataDir`""
 
     # Start with Windows: a shortcut in the user's Startup folder (no admin needed).
@@ -101,11 +108,15 @@
     $sc.WindowStyle = 7
     $sc.Save()
 
-    # Restart it now so an updated script takes effect.
-    Get-CimInstance Win32_Process -Filter "Name like 'py%'" |
-      Where-Object { $_.CommandLine -like '*backup_server.py*' } |
-      ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
-    Start-Process -FilePath $exe -ArgumentList $argLine -WorkingDirectory $dataDir -WindowStyle Hidden
+    $running = $false
+    try { $running = (Invoke-RestMethod -Uri "http://127.0.0.1:$apiPort/health" -TimeoutSec 2).app -eq 'portfolio-backup' } catch { }
+    if ($changed -or -not $running) {
+      # Restart so an updated script takes effect (or start it if it is down).
+      Get-CimInstance Win32_Process -Filter "Name like 'py%'" |
+        Where-Object { $_.CommandLine -like '*backup_server.py*' } |
+        ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+      Start-Process -FilePath $exe -ArgumentList $argLine -WorkingDirectory $dataDir -WindowStyle Hidden
+    }
 
     $up = $false
     foreach ($i in 1..20) {
@@ -121,6 +132,21 @@
     Write-Host "Copia automatica no activada: $($_.Exception.Message)" -ForegroundColor Yellow
   }
 
+  # 5. Automatic updates: run this same installer every hour, with no window.
+  $auto = $false
+  try {
+    New-Item -ItemType Directory -Path $dataDir -Force | Out-Null
+    $url = "https://raw.githubusercontent.com/$repo/$branch/docs/tools/serve-tailscale.ps1"
+    $vbs = Join-Path $dataDir 'update.vbs'
+    $ps = "powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -Command ""irm '$url' | iex"""
+    Set-Content -Path $vbs -Encoding ASCII -Value ('CreateObject("WScript.Shell").Run "' + $ps.Replace('"', '""') + '", 0, False')
+    & schtasks.exe /Create /F /SC HOURLY /TN 'Portfolio update' /TR "wscript.exe `"$vbs`"" | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "schtasks termino con codigo $LASTEXITCODE" }
+    $auto = $true
+  } catch {
+    Write-Host "Actualizacion automatica no activada: $($_.Exception.Message)" -ForegroundColor Yellow
+  }
+
   # The serve command above already printed the address; repeat it on one line.
   $name = $null
   try { $name = (& tailscale status --json | Out-String | ConvertFrom-Json).Self.DNSName } catch { }
@@ -131,4 +157,5 @@
     Write-Host "Portfolio listo en el puerto $port. Direccion: tailscale serve status" -ForegroundColor Green
   }
   if ($copies) { Write-Host "Copia automatica activa. Datos en $dataDir" -ForegroundColor Green }
+  if ($auto) { Write-Host 'Actualizacion automatica activa: cada hora.' -ForegroundColor Green }
 }
