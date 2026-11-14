@@ -131,6 +131,22 @@
   <div id="sheets"></div>
   <div id="toasts"></div>
 </div>
+<script>
+  (function () {
+    var app = document.getElementById('app');
+    function fit() {
+      var standalone = navigator.standalone === true || matchMedia('(display-mode: standalone)').matches;
+      if (!standalone) { app.style.height = ''; app.style.bottom = ''; return; }
+      var portrait = matchMedia('(orientation: portrait)').matches;
+      var full = portrait ? Math.max(screen.width, screen.height) : Math.min(screen.width, screen.height);
+      app.style.bottom = 'auto';
+      app.style.height = Math.max(innerHeight, full) + 'px';
+    }
+    fit();
+    addEventListener('resize', fit);
+    addEventListener('orientationchange', function () { setTimeout(fit, 300); });
+  })();
+</script>
 
 <noscript><p style="padding:24px;font-family:system-ui">Esta app necesita JavaScript.</p></noscript>
 <script type="module" src="js/main.js"></script>

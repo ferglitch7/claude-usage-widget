@@ -17,7 +17,7 @@ import { marketSeries, realSeries, rangeForSpan } from './series.js';
 import { snapshots, recordSnapshot, replaceSnapshots } from './snapshots.js';
 import { targets, plan, openTargets } from './targets.js';
 import { loadStats } from './stats.js';
-import { startUpdates } from './update.js';
+import { startUpdates, APP_VERSION } from './update.js';
 import { initBackup, scheduleBackup, backupStatus, fetchBackup, copyCode, onBackup } from './backup.js';
 
 const $ = id => document.getElementById(id);
@@ -915,6 +915,7 @@ function openSettings() {
       h('div.group', null, fieldButton('Exportar copia', { onclick: doExport }), fieldButton('Importar copia', { onclick: () => fileInput.click() }), wipe),
       fileInput,
       h('p.hint', { text: 'Tus posiciones se guardan en este dispositivo. Precios de Coinbase, CoinGecko, gold-api.com, Finnhub, Twelve Data y open.er-api.com.' }),
+      h('p.hint.version', { text: `Versión ${APP_VERSION}` }),
     ],
   });
   view.onShow = () => { ccyValue.textContent = ccy(); hide.set(state.settings.hidden); };

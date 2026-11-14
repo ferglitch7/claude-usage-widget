@@ -4,7 +4,7 @@
 // app comes back to the foreground (and every 30 minutes), and reloads when
 // they differ, but never in the middle of something: not while a sheet is open.
 
-export const APP_VERSION = '2026.11.14-1';
+export const APP_VERSION = '2026.11.14-2';
 
 const GUARD = 'portfolio.reloaded';
 let checking = false, pending = false;
