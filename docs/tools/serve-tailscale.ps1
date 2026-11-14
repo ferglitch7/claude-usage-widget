@@ -14,13 +14,12 @@
 # starts with Windows (a shortcut in the Startup folder). Without Python the
 # app works the same, just without copies.
 #
-# It also schedules itself to run every hour, hidden, so new versions of the
-# app reach this machine on their own. Each run only downloads and copies files;
-# the backup server is restarted only when its script changed or it is down.
+# Run it again to update the app: it downloads and copies the files again, and
+# restarts the backup server only when its script changed or it is down.
+# Nothing runs on its own: every update is this command, run by you.
 #
 # Undo:  tailscale serve --https=<port> off     (the port is in portfolio\.serve-port)
 #        delete "Portfolio backup.lnk" from the Startup folder (shell:startup)
-#        schtasks /Delete /TN "Portfolio update" /F
 
 & {
   $ErrorActionPreference = 'Stop'
@@ -132,20 +131,18 @@
     Write-Host "Copia automatica no activada: $($_.Exception.Message)" -ForegroundColor Yellow
   }
 
-  # 5. Automatic updates: run this same installer every hour, with no window.
-  $auto = $false
+  # 5. Remove the hourly self-update that earlier versions installed. It ran a
+  # script downloaded from GitHub every hour, which would let anyone able to
+  # change that branch run code on this machine. Updates are manual now.
   try {
-    New-Item -ItemType Directory -Path $dataDir -Force | Out-Null
-    $url = "https://raw.githubusercontent.com/$repo/$branch/docs/tools/serve-tailscale.ps1"
-    $vbs = Join-Path $dataDir 'update.vbs'
-    $ps = "powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -Command ""irm '$url' | iex"""
-    Set-Content -Path $vbs -Encoding ASCII -Value ('CreateObject("WScript.Shell").Run "' + $ps.Replace('"', '""') + '", 0, False')
-    & schtasks.exe /Create /F /SC HOURLY /TN 'Portfolio update' /TR "wscript.exe `"$vbs`"" | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw "schtasks termino con codigo $LASTEXITCODE" }
-    $auto = $true
-  } catch {
-    Write-Host "Actualizacion automatica no activada: $($_.Exception.Message)" -ForegroundColor Yellow
-  }
+    & schtasks.exe /Query /TN 'Portfolio update' 2>$null | Out-Null
+    if ($LASTEXITCODE -eq 0) {
+      & schtasks.exe /Delete /TN 'Portfolio update' /F | Out-Null
+      Write-Host 'Tarea "Portfolio update" eliminada.' -ForegroundColor Green
+    }
+  } catch { }
+  $oldVbs = Join-Path $dataDir 'update.vbs'
+  if (Test-Path $oldVbs) { Remove-Item -Path $oldVbs -Force -ErrorAction SilentlyContinue }
 
   # The serve command above already printed the address; repeat it on one line.
   $name = $null
@@ -157,5 +154,4 @@
     Write-Host "Portfolio listo en el puerto $port. Direccion: tailscale serve status" -ForegroundColor Green
   }
   if ($copies) { Write-Host "Copia automatica activa. Datos en $dataDir" -ForegroundColor Green }
-  if ($auto) { Write-Host 'Actualizacion automatica activa: cada hora.' -ForegroundColor Green }
 }
