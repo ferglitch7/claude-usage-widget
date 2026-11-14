@@ -125,6 +125,12 @@ export function quoteOf(a) {
   return { ...q, prev: (prevProvider && prevProvider(a)) || sampleRef(a.id) };
 }
 
+/** The live price alone, with no reference lookup (safe to call from providers). */
+export function livePrice(a) {
+  const q = quotes.get(a.id);
+  return q ? q.p : null;
+}
+
 let prevProvider = null;
 /** Lets another module supply "price about 24 h ago" for assets that lack one. */
 export function setPrevProvider(fn) { prevProvider = fn; }

@@ -3,7 +3,8 @@
 //
 //   crypto   Coinbase candles, or CoinGecko for coins Coinbase does not list
 //   stocks   Twelve Data (free key)
-//   gold     Twelve Data XAU/USD (free key)
+//   gold     Coinbase PAXG-USD, a token backed one-to-one by an ounce of gold,
+//            rescaled to the live spot price. Free and needs no key.
 //   silver, platinum, palladium
 //            Twelve Data's free plan has no spot series for these, so the chart
 //            borrows the shape of a physically backed ETF (SLV, PPLT, PALL),
@@ -13,7 +14,7 @@
 // through a small queue; everything is cached (memory + localStorage) and
 // served stale while it refreshes.
 
-import { quoteOf } from './prices.js';
+import { livePrice } from './prices.js';
 
 const CB_REST = 'https://api.exchange.coinbase.com';
 const CG = 'https://api.coingecko.com/api/v3';
@@ -30,6 +31,7 @@ export const RANGES = {
 };
 
 const PROXY = { XAG: 'SLV', XPT: 'PPLT', XPD: 'PALL' };
+const PROXY_LABEL = { 'PAXG-USD': 'del token PAXG' };
 
 const cache = new Map();    // "id:range" -> { t, pts, scaled? }
 const pending = new Map();  // "id:range" -> Promise
@@ -82,7 +84,7 @@ function source(a) {
   if (a.kind === 'crypto') return a.cb ? { type: 'cb', sym: a.cb } : a.cg ? { type: 'cg', sym: a.cg } : null;
   if (a.kind === 'stock') return { type: 'td', sym: a.sym.replace('-', '.') };
   if (a.kind === 'metal') {
-    if (a.sym === 'XAU') return { type: 'td', sym: 'XAU/USD' };
+    if (a.sym === 'XAU') return { type: 'cb', sym: 'PAXG-USD', proxy: true };
     if (PROXY[a.sym]) return { type: 'td', sym: PROXY[a.sym], proxy: true };
   }
   return null;
@@ -95,10 +97,10 @@ export function availability(a) {
   return s.type === 'td' && !tdKey ? 'needs-key' : 'yes';
 }
 
-/** The ETF ticker standing in for this asset's history, if any. */
+/** What stands in for this asset's history, in words ("del ETF SLV"), if anything. */
 export function proxyOf(a) {
   const s = source(a);
-  return s && s.proxy ? s.sym : null;
+  return s && s.proxy ? PROXY_LABEL[s.sym] || `del ETF ${s.sym}` : null;
 }
 
 export function setHistoryKey(key) {
@@ -233,10 +235,10 @@ function request(a, s, range, key, priority) {
 function present(a, s, hit) {
   if (!hit) return null;
   if (!s.proxy) return { pts: hit.pts, approx: false };
-  // Rescale the ETF so its last value equals the metal's live spot price.
-  const q = quoteOf(a), last = hit.pts[hit.pts.length - 1][1];
-  if (!q || !last) return null;
-  const k = q.p / last;
+  // Rescale the stand-in so its last value equals the metal's live spot price.
+  const live = livePrice(a), last = hit.pts[hit.pts.length - 1][1];
+  if (!live || !last) return null;
+  const k = live / last;
   if (!hit.scaled || Math.abs(hit.scaled.k / k - 1) > 0.0005) {
     hit.scaled = { k, pts: hit.pts.map(p => [p[0], p[1] * k]) };
   }
@@ -273,19 +275,22 @@ export async function load(a, range) {
 }
 
 /**
- * Price about 24 hours ago, from an exact (non-proxy) cached series. Gives
- * assets whose live source has no reference price (gold) a real daily change.
+ * Price about 24 hours ago, for assets whose live source has no reference
+ * price (metals). Series that trade around the clock (Coinbase, including the
+ * PAXG stand-in for gold) qualify; ETFs that close at night do not.
  */
 export function ref24(a) {
   const x = resolve(a, '1D');
-  if (!x || x.s.proxy || !x.hit) return null;
+  if (!x || (x.s.proxy && x.s.type !== 'cb') || !x.hit) return null;
   if (x.stale) request(a, x.s, '1D', x.key, 1);
   const target = Date.now() - DAY, pts = x.hit.pts;
   // The series must reach back to about a day ago and not be days out of date.
   if (pts[0][0] > target + 2 * HOUR || Date.now() - pts[pts.length - 1][0] > 4 * DAY) return null;
   let p = pts[0][1];
   for (const pt of pts) { if (pt[0] <= target) p = pt[1]; else break; }
-  return p;
+  if (!x.s.proxy) return p;
+  const live = livePrice(a), last = pts[pts.length - 1][1];
+  return live && last ? p * (live / last) : null; // same scale as the live price
 }
 
 /**

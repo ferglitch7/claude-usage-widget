@@ -17,7 +17,7 @@ import { marketSeries, realSeries, rangeForSpan } from './series.js';
 import { snapshots, recordSnapshot, replaceSnapshots } from './snapshots.js';
 import { targets, plan, openTargets } from './targets.js';
 import { loadStats } from './stats.js';
-import { initBackup, scheduleBackup, backupStatus, listBackups, fetchBackup, device, onBackup } from './backup.js';
+import { initBackup, scheduleBackup, backupStatus, fetchBackup, copyCode, onBackup } from './backup.js';
 
 const $ = id => document.getElementById(id);
 const ccy = () => state.settings.ccy;
@@ -693,7 +693,7 @@ function openDetail(id, { edit = false } = {}) {
     }
     chart.setData(H.windowed(a, got.pts, range));
     approx.hidden = !got.approx;
-    if (got.approx) approx.textContent = `Histórico aproximado a partir del ETF ${H.proxyOf(a)}.`;
+    if (got.approx) approx.textContent = `Histórico aproximado a partir ${H.proxyOf(a)}.`;
     paint();
   }
 
@@ -796,37 +796,39 @@ function applyCopy(data) {
   replaceSnapshots(data.snapshots || []);
 }
 
-/** Lists the copies kept on the serving machine; two taps restore one. */
+/**
+ * Restore a copy by its code. Copies are not listed: everyone who opens the app
+ * reaches the same server, so the code is what keeps a copy private.
+ */
 function restoreView(sheet) {
-  const group = h('div.group');
-  const note = h('p.hint', { text: 'Buscando copias…' });
-  const view = makeView({ title: 'Restaurar copia', body: [group, note] });
-  const mine = device().id;
-  listBackups().then(list => {
-    note.textContent = list.length ? 'Restaurar reemplaza las posiciones de este dispositivo.' : 'Todavía no hay ninguna copia.';
-    group.replaceChildren(...list.map(b => {
-      const value = h('span', { text: `${b.count} ${b.count === 1 ? 'activo' : 'activos'} · ${F.ago(Date.parse(b.updated))}` });
-      let armed = 0;
-      return h('button.field', {
-        type: 'button',
-        onclick: async () => {
-          if (Date.now() - armed > 3500) {
-            armed = Date.now();
-            const old = value.textContent;
-            value.textContent = 'Toca otra vez para restaurar';
-            setTimeout(() => { if (Date.now() - armed >= 3400) value.textContent = old; }, 3500);
-            return;
-          }
-          const data = await fetchBackup(b.id);
-          if (!data) { toast('No se pudo leer esa copia'); return; }
-          applyCopy(data);
-          haptic(10);
-          sheet.close();
-          toast('Copia restaurada');
-        },
-      }, h('span.field-label', { text: b.id === mine ? `${b.label} · este` : b.label }), h('span.field-value', null, value));
-    }));
+  let timer = 0, seq = 0, found = null;
+  const input = h('input.field-input.left', { id: 'restore-code', type: 'text', placeholder: 'Código de copia', autocomplete: 'off', autocapitalize: 'off', spellcheck: 'false', 'aria-label': 'Código de copia' });
+  const mark = h('span.field-suffix');
+  const btn = h('button.btn-primary', { type: 'button', text: 'Restaurar', disabled: true });
+  const note = h('p.hint', { text: 'Está en Ajustes → Copia automática del dispositivo original. Restaurar reemplaza las posiciones de este.' });
+  input.addEventListener('input', () => {
+    clearTimeout(timer);
+    found = null; btn.disabled = true; mark.textContent = '';
+    const my = ++seq;
+    if (input.value.replace(/[^a-z0-9]/gi, '').length < 6) return;
+    timer = setTimeout(async () => {
+      const d = await fetchBackup(input.value);
+      if (my !== seq) return;
+      found = d && d.count ? d : null;
+      mark.style.color = found ? '' : 'var(--down)';
+      mark.textContent = found ? `${d.count} ${d.count === 1 ? 'activo' : 'activos'} · ${F.ago(Date.parse(d.updated))}` : 'No existe';
+      btn.disabled = !found;
+    }, 450);
   });
+  btn.addEventListener('click', () => {
+    if (!found) return;
+    applyCopy(found.data);
+    haptic(10);
+    sheet.close();
+    toast('Copia restaurada');
+  });
+  const view = makeView({ title: 'Restaurar copia', body: [h('div.group', null, h('label.field', null, input, mark)), note], foot: btn });
+  view.onShow = () => { try { input.focus({ preventScroll: true }); } catch { /* not focusable yet */ } };
   return view;
 }
 
@@ -868,13 +870,21 @@ function openSettings() {
 
   // Copies on the serving machine: only shown where that server exists.
   const copyValue = h('span');
+  const codeValue = h('span', { text: copyCode() });
   const copyTitle = h('div.group-title', { text: 'Copia automática' });
   const copyGroup = h('div.group', null,
     h('div.field', null, h('span.field-label', { text: 'Última copia' }), h('span.field-value', null, copyValue)),
+    fieldButton('Código de esta copia', {
+      value: codeValue,
+      onclick: async () => {
+        try { await navigator.clipboard.writeText(copyCode()); toast('Código copiado'); } catch { toast('Anótalo: ' + copyCode()); }
+      },
+    }),
     fieldButton('Restaurar una copia', { chevron: true, onclick: () => sheet.push(restoreView(sheet)) }));
+  const codeHint = h('p.hint', { text: 'Guarda el código: es lo único que permite recuperar esta copia en otro dispositivo. Nadie más ve tus copias.' });
   const paintCopy = () => {
     const b = backupStatus();
-    copyTitle.hidden = copyGroup.hidden = !b.enabled;
+    copyTitle.hidden = copyGroup.hidden = codeHint.hidden = !b.enabled;
     copyValue.textContent = isDemo() ? 'En pausa (ejemplo)' : b.lastPush ? F.ago(b.lastPush) : 'Pendiente';
   };
   paintCopy();
@@ -893,13 +903,13 @@ function openSettings() {
         test: P.testFinnhubKey, save: key => setSetting('finnhubKey', key),
       })),
       h('p.hint', { html: 'Llave gratuita en <a href="https://finnhub.io/register" target="_blank" rel="noopener">finnhub.io</a>. Da precio en tiempo real de acciones y ETFs de EE. UU.' }),
-      h('div.group-title', { text: 'Gráficos de acciones y oro' }),
+      h('div.group-title', { text: 'Gráficos de acciones' }),
       h('div.group', null, keyField({
         id: 'set-history-key', placeholder: 'Llave de Twelve Data', value: state.settings.historyKey,
         test: H.testHistoryKey, save: key => setSetting('historyKey', key),
       })),
-      h('p.hint', { html: 'Llave gratuita en <a href="https://twelvedata.com/pricing" target="_blank" rel="noopener">twelvedata.com</a>. Da el histórico de acciones, ETFs y oro. Plata, platino y paladio se aproximan con un ETF.' }),
-      copyTitle, copyGroup,
+      h('p.hint', { html: 'Llave gratuita en <a href="https://twelvedata.com/pricing" target="_blank" rel="noopener">twelvedata.com</a>. Da el histórico de acciones y ETFs, y el aproximado de plata, platino y paladio. Crypto y oro no la necesitan.' }),
+      copyTitle, copyGroup, codeHint,
       h('div.group-title', { text: 'Datos' }),
       h('div.group', null, fieldButton('Exportar copia', { onclick: doExport }), fieldButton('Importar copia', { onclick: () => fileInput.click() }), wipe),
       fileInput,
@@ -1026,10 +1036,8 @@ renderHome();
 initBackup({
   getDoc: () => exportObject({ snapshots: snapshots() }),
   canPush: () => !isDemo() && state.holdings.length > 0,
-}).then(async on => {
-  if (!on || state.holdings.length) return;
-  const list = await listBackups();
-  $('empty-restore').hidden = !list.some(b => b.count > 0);
+}).then(on => {
+  $('empty-restore').hidden = !on;
 });
 
 if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost' || location.hostname === '127.0.0.1')) {

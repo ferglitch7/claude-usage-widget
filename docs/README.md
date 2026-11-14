@@ -47,7 +47,7 @@ llegan solos a la torre, y el iPhone los toma al abrir la app.
 | --- | --- | --- | --- |
 | Crypto listada en Coinbase | Coinbase, tick a tick | Coinbase | no |
 | Resto de crypto | CoinGecko, cada 60 s | CoinGecko | no |
-| Oro | gold-api.com, cada 30 s | Twelve Data (XAU/USD) | Twelve Data, gratuita |
+| Oro | gold-api.com, cada 30 s | Coinbase PAXG (token respaldado por oro), reescalado al precio spot | no |
 | Plata, platino, paladio | gold-api.com, cada 30 s | aproximado con un ETF (SLV, PPLT, PALL) vía Twelve Data | Twelve Data, gratuita |
 | Acciones y ETFs de EE. UU. | Finnhub, cada 15 s | Twelve Data | Finnhub y Twelve Data, gratuitas |
 | Efectivo / conversión | open.er-api.com, diaria | — | no |
@@ -85,8 +85,10 @@ llena con el uso.
 Las posiciones se guardan en `localStorage` de ese navegador.
 
 - **Copia automática** (solo servida con `backup_server.py`): cada dispositivo
-  mantiene su copia en la máquina que sirve la app; Ajustes → Restaurar una
-  copia las lista. Una copia vacía nunca reemplaza a una con posiciones, y se
+  mantiene su copia en la máquina que sirve la app. Las copias no se listan:
+  cada una se recupera con su código (Ajustes → Código de esta copia), así que
+  quien comparta la app no ve las copias de los demás. Si pierdes el código,
+  los archivos de `portfolio-data` llevan el código como nombre. Una copia vacía nunca reemplaza a una con posiciones, y se
   conserva la última de cada día durante 14 días en `portfolio-data\history`.
 - **Manual**: Ajustes → Exportar copia / Importar copia.
 

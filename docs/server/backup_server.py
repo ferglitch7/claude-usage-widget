@@ -11,9 +11,12 @@ expose it next to the app under /api, for example with Tailscale Serve:
 It listens on 127.0.0.1 only, so nothing reaches it except through that mount.
 
     GET  /health            {"ok": true, "app": "portfolio-backup"}
-    GET  /backups           [{"id", "label", "updated", "count"}]
     GET  /backups/<id>      the stored copy
     PUT  /backups/<id>      body {"label": str, "data": {"holdings": [...], ...}}
+
+There is deliberately no way to list the copies: everyone who can open the app
+can reach this server, so a copy's id works as its secret. The app shows each
+device its own id as a "copy code" to restore it elsewhere.
 
 Files: <dir>/<id>.json is the latest copy. <dir>/history/<id>-<YYYYMMDD>.json
 keeps the last copy of each day for KEEP_DAYS days, as restore points to pick
@@ -133,8 +136,6 @@ class Handler(BaseHTTPRequestHandler):
         parts = self.parts()
         if parts == ["health"]:
             return self.send_json(200, {"ok": True, "app": "portfolio-backup", "version": 1})
-        if parts == ["backups"]:
-            return self.send_json(200, self.store.list())
         if len(parts) == 2 and parts[0] == "backups" and ID_RE.match(parts[1]):
             doc = self.store.get(parts[1])
             return self.send_json(200, doc) if doc else self.send_json(404, {"error": "not found"})

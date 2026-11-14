@@ -89,19 +89,23 @@ export function scheduleBackup(ms = 2500) {
   timer = setTimeout(pushBackup, ms);
 }
 
-/** [{ id, label, updated, count }] newest first; empty when unavailable. */
-export async function listBackups() {
-  if (!enabled) return [];
-  try {
-    const list = await api('backups');
-    return Array.isArray(list) ? list.sort((a, b) => String(b.updated).localeCompare(String(a.updated))) : [];
-  } catch { return []; }
+/** This device's copy code, grouped for reading aloud: "ab3d-9xk2-q7mw". */
+export function copyCode() {
+  return device().id.match(/.{1,4}/g).join('-');
 }
 
-/** The stored document of one copy, or null. */
-export async function fetchBackup(id) {
+/** Accepts a code typed with or without dashes, spaces or capitals. */
+export function normalizeCode(text) {
+  const id = String(text || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+  return /^[a-z0-9]{6,40}$/.test(id) ? id : null;
+}
+
+/** One copy by its code: { data, updated, count, label } or null. */
+export async function fetchBackup(code) {
+  const id = normalizeCode(code);
+  if (!enabled || !id) return null;
   try {
-    const d = await api('backups/' + encodeURIComponent(id));
-    return d && d.data && Array.isArray(d.data.holdings) ? d.data : null;
+    const d = await api('backups/' + id);
+    return d && d.data && Array.isArray(d.data.holdings) ? d : null;
   } catch { return null; }
 }
